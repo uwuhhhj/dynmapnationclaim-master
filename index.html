@@ -1,0 +1,573 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dynmap 领地可视化</title>
+  <link rel="stylesheet" href="css/leaflet.css">
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+      background-color: #0f172a;
+      color: #e2e8f0;
+    }
+
+    .app-shell {
+      display: flex;
+      height: 100%;
+    }
+
+    .map-container {
+      flex: 1 1 auto;
+      position: relative;
+      min-width: 0;
+    }
+
+    #map {
+      position: absolute;
+      inset: 0;
+      background: #0f172a;
+    }
+
+    .control-panel {
+      width: 360px;
+      max-width: 100%;
+      background: rgba(15, 23, 42, 0.92);
+      border-left: 1px solid rgba(148, 163, 184, 0.1);
+      padding: 20px 24px;
+      overflow-y: auto;
+    }
+
+    .panel-header h1 {
+      margin: 0 0 6px;
+      font-size: 22px;
+      color: #f8fafc;
+    }
+
+    .panel-header p {
+      margin: 0;
+      font-size: 13px;
+      color: #94a3b8;
+    }
+
+    .button-grid {
+      display: grid;
+      gap: 10px;
+      margin: 20px 0;
+    }
+
+    .button-grid.two-column {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .panel-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: none;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+      color: #0f172a;
+      background: #e2e8f0;
+    }
+
+    .panel-button.primary {
+      background: #38bdf8;
+      color: #0c4a6e;
+    }
+
+    .panel-button.danger {
+      background: #fca5a5;
+      color: #7f1d1d;
+    }
+
+    .panel-button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 12px rgba(15, 23, 42, 0.25);
+    }
+
+    .panel-section {
+      margin-top: 24px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(148, 163, 184, 0.15);
+    }
+
+    .panel-section h2 {
+      margin: 0 0 12px;
+      font-size: 16px;
+      color: #f8fafc;
+    }
+
+    #storage-status {
+      display: grid;
+      gap: 8px;
+      margin-top: 16px;
+    }
+
+    #status-content {
+      margin-top: 16px;
+      background: rgba(148, 163, 184, 0.08);
+      border-radius: 8px;
+      padding: 12px;
+      color: #cbd5f5;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    #data-list {
+      display: grid;
+      gap: 12px;
+    }
+
+    .data-card {
+      background: rgba(30, 41, 59, 0.9);
+      border-radius: 10px;
+      padding: 16px;
+      box-shadow: 0 10px 20px rgba(15, 23, 42, 0.35);
+    }
+
+    .leaflet-top.leaflet-left .leaflet-control-layers {
+      margin-top: 12px;
+      margin-left: 12px;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 12px 24px rgba(15, 23, 42, 0.35);
+    }
+
+    .leaflet-control-layers-toggle {
+      width: auto;
+      height: auto;
+      padding: 0.45rem 0.85rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      background: #e2e8f0;
+      color: #0f172a;
+    }
+
+    .leaflet-control-layers-expanded {
+      background: rgba(15, 23, 42, 0.92);
+      color: #e2e8f0;
+      border: none;
+    }
+
+    .leaflet-control-layers-overlays label {
+      font-size: 0.85rem;
+      padding: 0.25rem 0.5rem;
+    }
+
+    @media (max-width: 1024px) {
+      .app-shell {
+        flex-direction: column;
+      }
+
+      .control-panel {
+        width: 100%;
+        height: 45vh;
+        border-left: none;
+        border-top: 1px solid rgba(148, 163, 184, 0.1);
+      }
+
+      .map-container {
+        height: 55vh;
+      }
+
+      #map {
+        position: relative;
+        height: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <div class="map-container">
+      <div id="map" aria-label="Dynmap 自定义底图"></div>
+    </div>
+
+    <aside class="control-panel" aria-label="数据管理面板">
+      <div class="panel-header">
+        <h1>Dynmap 数据控制台</h1>
+        <p>在这里获取、查询和导出领地数据。</p>
+      </div>
+
+      <div class="button-grid">
+        <button class="panel-button primary" onclick="refreshAllData()">🔄 获取最新数据</button>
+        <button class="panel-button" onclick="viewStoredData()">👁️ 查看当前存储</button>
+        <button id="data-view-toggle" class="panel-button" onclick="toggleDataView()">🔄 切换到区域数据</button>
+        <button class="panel-button" onclick="viewCountryData()">🏰 查看国家数据</button>
+        <button class="panel-button" onclick="exportData()">📤 导出数据</button>
+        <button class="panel-button" onclick="showDatabaseStats()">📊 数据库统计</button>
+        <button class="panel-button danger" onclick="clearStoredData()">🗑️ 清空存储</button>
+      </div>
+
+      <div id="storage-status" aria-live="polite"></div>
+      <div id="status-content"></div>
+
+      <div class="panel-section">
+        <h2 id="data-display-title">📍 存储的标记数据</h2>
+        <div id="data-list"></div>
+      </div>
+    </aside>
+  </div>
+
+  <script src="js/libs/leaflet.js"></script>
+  <script src="js/data/indexeddb-manager.js"></script>
+  <script src="js/data/data-manager.js"></script>
+  <script>
+    const imageWidth = 990;
+    const imageHeight = 838;
+    const imageBounds = [[0, 0], [imageHeight, imageWidth]];
+
+    const map = L.map('map', {
+      crs: L.CRS.Simple,
+      center: [imageHeight / 2, imageWidth / 2],
+      zoom: -1,
+      minZoom: -3,
+      maxZoom: 2
+    });
+
+    const baseLayer = L.imageOverlay('tiles/map_low.png', imageBounds);
+    baseLayer.addTo(map);
+    map.fitBounds(imageBounds);
+
+    const overlayLayers = {
+      territoryMarkers: L.layerGroup(),
+      territoryAreas: L.layerGroup(),
+      countrySpawn: L.layerGroup(),
+      countryAreas: L.layerGroup(),
+      countryCapitals: L.layerGroup()
+    };
+
+    Object.values(overlayLayers).forEach(layer => layer.addTo(map));
+
+    const baseLayers = {
+      'Dynmap 底图': baseLayer
+    };
+
+    const overlayControl = L.control.layers(baseLayers, {
+      '领地标记（点）': overlayLayers.territoryMarkers,
+      '领地区域（面）': overlayLayers.territoryAreas,
+      '国家出生点（点）': overlayLayers.countrySpawn,
+      '国家区域（面）': overlayLayers.countryAreas,
+      '国家首都': overlayLayers.countryCapitals
+    }, {
+      position: 'topleft'
+    }).addTo(map);
+
+    window.DynmapOverlayLayers = {
+      map,
+      baseLayer,
+      overlayLayers,
+      overlayControl,
+      imageSize: { width: imageWidth, height: imageHeight }
+    };
+  </script>`r`n  <script>
+    (function () {
+      const overlayApi = window.DynmapOverlayLayers;
+      if (!overlayApi) {
+        console.warn('[OverlayManager] Missing overlay API');
+        return;
+      }
+
+      const { overlayLayers, imageSize } = overlayApi;
+      const imageWidthValue = imageSize?.width;
+      const imageHeightValue = imageSize?.height;
+
+      if (!overlayLayers || !imageWidthValue || !imageHeightValue) {
+        console.warn('[OverlayManager] Incomplete overlay configuration');
+        return;
+      }
+
+      const MC_BOUNDS = {
+        minX: -10459,
+        maxX: 8540,
+        minZ: -8384,
+        maxZ: 7616
+      };
+
+      const WORLD_WIDTH = MC_BOUNDS.maxX - MC_BOUNDS.minX;
+      const WORLD_HEIGHT = MC_BOUNDS.maxZ - MC_BOUNDS.minZ;
+      const SCALE_X = imageWidthValue / WORLD_WIDTH;
+      const SCALE_Y = imageHeightValue / WORLD_HEIGHT;
+
+      const overlayContent = {
+        territoryMarkers: [],
+        territoryAreas: [],
+        countrySpawn: [],
+        countryAreas: [],
+        countryCapitals: []
+      };
+
+      function mcToMapCoords(mcX, mcZ) {
+        if (typeof mcX !== 'number' || typeof mcZ !== 'number') {
+          return null;
+        }
+
+        const relativeX = mcX - MC_BOUNDS.minX;
+        const relativeZ = mcZ - MC_BOUNDS.minZ;
+
+        const mapX = relativeX * SCALE_X;
+        const mapY = imageHeightValue - (relativeZ * SCALE_Y);
+
+        if (!Number.isFinite(mapX) || !Number.isFinite(mapY)) {
+          return null;
+        }
+
+        return [mapY, mapX];
+      }
+
+      function clearOverlay(key) {
+        overlayContent[key].forEach(layer => {
+          overlayLayers[key].removeLayer(layer);
+        });
+        overlayContent[key] = [];
+      }
+
+      function bindPopup(layer, heading, details) {
+        const parts = [];
+        if (heading) {
+          parts.push(`<strong>${heading}</strong>`);
+        }
+        if (details) {
+          parts.push(details);
+        }
+        if (parts.length) {
+          layer.bindPopup(parts.join(''));
+        }
+      }
+
+      function updateTerritoryMarkers(markers) {
+        clearOverlay('territoryMarkers');
+
+        if (!markers || typeof markers !== 'object') {
+          return;
+        }
+
+        Object.entries(markers).forEach(([markerId, marker]) => {
+          const coords = mcToMapCoords(marker?.x, marker?.z);
+          if (!coords) {
+            return;
+          }
+
+          const markerLayer = L.circleMarker(coords, {
+            radius: 4,
+            weight: 1,
+            color: '#38bdf8',
+            fillColor: '#38bdf8',
+            fillOpacity: 0.85
+          });
+
+          bindPopup(markerLayer, marker?.label || markerId, marker?.desc);
+          overlayLayers.territoryMarkers.addLayer(markerLayer);
+          overlayContent.territoryMarkers.push(markerLayer);
+        });
+      }
+
+      function updateTerritoryAreas(areas) {
+        clearOverlay('territoryAreas');
+
+        if (areas && typeof areas === 'object') {
+          Object.entries(areas).forEach(([areaId, area]) => {
+            if (!Array.isArray(area?.x) || !Array.isArray(area?.z) || area.x.length !== area.z.length || !area.x.length) {
+              return;
+            }
+
+            const latLngs = area.x.map((xCoord, idx) => mcToMapCoords(xCoord, area.z[idx])).filter(Boolean);
+            if (!latLngs.length) {
+              return;
+            }
+
+            const polygon = L.polygon(latLngs, {
+              color: area?.color || '#34d399',
+              weight: area?.weight ?? 2,
+              fillColor: area?.fillcolor || area?.color || '#34d399',
+              fillOpacity: area?.fillopacity ?? 0.3
+            });
+
+            bindPopup(polygon, area?.label || areaId, area?.desc);
+            overlayLayers.territoryAreas.addLayer(polygon);
+            overlayContent.territoryAreas.push(polygon);
+          });
+        }
+
+        if (window.TownAreasLayer && typeof window.TownAreasLayer.createTownLayer === 'function') {
+          const townLayer = window.TownAreasLayer.createTownLayer();
+          if (townLayer) {
+            overlayLayers.territoryAreas.addLayer(townLayer);
+            overlayContent.territoryAreas.push(townLayer);
+          }
+        }
+      }
+
+      function updateCountrySpawns(countrySpawn) {
+        clearOverlay('countrySpawn');
+
+        if (!countrySpawn || typeof countrySpawn !== 'object') {
+          return;
+        }
+
+        Object.entries(countrySpawn).forEach(([countryName, data]) => {
+          (data?.spawns || []).forEach(spawn => {
+            const coords = mcToMapCoords(spawn?.x, spawn?.z);
+            if (!coords) {
+              return;
+            }
+
+            const spawnMarker = L.circleMarker(coords, {
+              radius: 5,
+              weight: 2,
+              color: '#facc15',
+              fillColor: '#facc15',
+              fillOpacity: 0.9
+            });
+
+            bindPopup(spawnMarker, countryName, spawn?.name);
+            overlayLayers.countrySpawn.addLayer(spawnMarker);
+            overlayContent.countrySpawn.push(spawnMarker);
+          });
+        });
+      }
+
+      function updateCountryAreas(countryAreas) {
+        clearOverlay('countryAreas');
+
+        if (!countryAreas || typeof countryAreas !== 'object') {
+          return;
+        }
+
+        Object.entries(countryAreas).forEach(([countryName, areas]) => {
+          Object.entries(areas || {}).forEach(([areaId, area]) => {
+            if (!Array.isArray(area?.x) || !Array.isArray(area?.z) || area.x.length !== area.z.length || !area.x.length) {
+              return;
+            }
+
+            const latLngs = area.x.map((xCoord, idx) => mcToMapCoords(xCoord, area.z[idx])).filter(Boolean);
+            if (!latLngs.length) {
+              return;
+            }
+
+            const polygon = L.polygon(latLngs, {
+              color: '#f97316',
+              weight: area?.weight ?? 2,
+              fillColor: '#fb923c',
+              fillOpacity: 0.2
+            });
+
+            const heading = area?.label ? `${countryName} · ${area.label}` : countryName;
+            bindPopup(polygon, heading, area?.desc);
+            overlayLayers.countryAreas.addLayer(polygon);
+            overlayContent.countryAreas.push(polygon);
+          });
+        });
+      }
+
+      function updateCountryCapitals(countryCapitals) {
+        clearOverlay('countryCapitals');
+
+        if (!countryCapitals || typeof countryCapitals !== 'object') {
+          return;
+        }
+
+        Object.entries(countryCapitals).forEach(([countryName, capitalInfo]) => {
+          const capitalAreas = capitalInfo?.areas || {};
+          const capitalName = capitalInfo?.name || countryName;
+
+          Object.entries(capitalAreas).forEach(([areaId, area]) => {
+            if (!Array.isArray(area?.x) || !Array.isArray(area?.z) || area.x.length !== area.z.length || !area.x.length) {
+              return;
+            }
+
+            const latLngs = area.x.map((xCoord, idx) => mcToMapCoords(xCoord, area.z[idx])).filter(Boolean);
+            if (!latLngs.length) {
+              return;
+            }
+
+            const polygon = L.polygon(latLngs, {
+              color: '#dc2626',
+              weight: area?.weight ?? 3,
+              fillColor: '#ef4444',
+              fillOpacity: 0.35
+            });
+
+            const heading = capitalName ? `${countryName} · ${capitalName}` : countryName;
+            bindPopup(polygon, heading, area?.desc);
+            overlayLayers.countryCapitals.addLayer(polygon);
+            overlayContent.countryCapitals.push(polygon);
+          });
+        });
+      }
+
+      function applyData(detail = {}) {
+        updateTerritoryMarkers(detail.markers || {});
+        updateTerritoryAreas(detail.areas || {});
+        updateCountrySpawns(detail.countrySpawn || {});
+        updateCountryAreas(detail.countryAreas || {});
+        updateCountryCapitals(detail.countryCapitals || {});
+      }
+
+      async function loadFromStorage() {
+        if (!window.IndexedDBStorage || typeof window.IndexedDBStorage.getItem !== 'function') {
+          applyData({});
+          return;
+        }
+
+        const storageKeys = ['landMarkers', 'landAreas', 'countrySpawn', 'countryAreas', 'countryCapitals'];
+        const results = await Promise.all(storageKeys.map(key => window.IndexedDBStorage.getItem(key)));
+        const parsed = {};
+        storageKeys.forEach((key, index) => {
+          const raw = results[index];
+          if (!raw) {
+            parsed[key] = null;
+            return;
+          }
+          try {
+            parsed[key] = JSON.parse(raw);
+          } catch (error) {
+            console.warn('[OverlayManager] Failed to parse stored data for', key, error);
+            parsed[key] = null;
+          }
+        });
+
+        applyData({
+          markers: parsed.landMarkers,
+          areas: parsed.landAreas,
+          countrySpawn: parsed.countrySpawn,
+          countryAreas: parsed.countryAreas,
+          countryCapitals: parsed.countryCapitals
+        });
+      }
+
+      document.addEventListener('dynmap:data-updated', event => {
+        applyData(event.detail || {});
+      });
+
+      loadFromStorage();
+    })();
+  </script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
