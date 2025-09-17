@@ -10,6 +10,7 @@ const STORAGE_KEYS = Object.freeze({
   markers: 'landMarkers',
   areas: 'landAreas',
   countrySpawn: 'countrySpawn',
+  countryAreas: 'countryAreas',
   countryCapitals: 'countryCapitals',
   countryClaims: 'countryClaims',
   claimsConfig: 'claimsConfig',
@@ -54,6 +55,37 @@ function extractCountryFromDesc(desc) {
   }
 
   return null;
+}
+
+// 严格解析“首都: XXX/首都：XXX”的工具方法
+function extractCapitalFromDescStrict(desc) {
+  const cleanDesc = stripHtml(desc);
+  if (!cleanDesc) {
+    return null;
+  }
+
+  const patterns = [
+    /首都[:：]?\s*([^，。:\s]+)/
+  ];
+
+  for (const pattern of patterns) {
+    const match = cleanDesc.match(pattern);
+    if (match && match[1]) {
+      return match[1].trim();
+    }
+  }
+
+  return null;
+}
+
+// 校验区域文本是否以 >首都名< 的形式出现
+function areaContainsTagDelimitedName(source, name) {
+  if (!source || !name || typeof source !== 'string' || typeof name !== 'string') {
+    return false;
+  }
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`>${escaped}<`);
+  return re.test(source);
 }
 
 function deriveTerritoryGroupingName(identifier, source) {
@@ -253,18 +285,15 @@ async function processCountryData(markers, areas) {
 
   if (markerData) {
     for (const [markerId, marker] of Object.entries(markerData)) {
-      let countryName =
+      // Only accept countries parsed via extractCountryFromDesc
+      const countryName =
+        extractCountryFromDesc(marker?.markup) ||
         extractCountryFromDesc(marker?.desc) ||
         extractCountryFromDesc(marker?.label);
 
       if (!countryName) {
-        countryName = deriveTerritoryGroupingName(markerId, marker);
-        if (!countryName) {
-          logger.warn(`Unable to determine country or territory for marker ${markerId}`);
-          continue;
-        }
-
-        logger.info(`Derived territory grouping for marker ${markerId}: ${countryName}`);
+        logger.warn(`Skipping marker ${markerId}: no country found via extractCountryFromDesc`);
+        continue;
       }
 
       if (!countrySpawn[countryName]) {
@@ -288,19 +317,15 @@ async function processCountryData(markers, areas) {
 
   if (areaData) {
     for (const [areaId, area] of Object.entries(areaData)) {
-      let countryName =
+      // Only accept countries parsed via extractCountryFromDesc
+      const countryName =
         extractCountryFromDesc(area?.markup) ||
         extractCountryFromDesc(area?.desc) ||
         extractCountryFromDesc(area?.label);
 
       if (!countryName) {
-        countryName = deriveTerritoryGroupingName(areaId, area);
-        if (!countryName) {
-          logger.warn(`Unable to determine country or territory for area ${areaId}`);
-          continue;
-        }
-
-        logger.info(`Derived territory grouping for area ${areaId}: ${countryName}`);
+        logger.warn(`Skipping area ${areaId}: no country found via extractCountryFromDesc`);
+        continue;
       }
 
       if (!countryAreas[countryName]) {
@@ -310,9 +335,9 @@ async function processCountryData(markers, areas) {
       countryAreas[countryName][areaId] = area;
 
       const capitalName =
-        extractCapitalFromDesc(area?.markup) ||
-        extractCapitalFromDesc(area?.desc) ||
-        extractCapitalFromDesc(area?.label);
+        extractCapitalFromDescStrict(area?.markup) ||
+        extractCapitalFromDescStrict(area?.desc) ||
+        extractCapitalFromDescStrict(area?.label);
 
       if (capitalName) {
         if (!countryCapitals[countryName]) {
@@ -321,8 +346,18 @@ async function processCountryData(markers, areas) {
           countryCapitals[countryName].areas = {};
         }
 
+        // 更新首都名字
         countryCapitals[countryName].name = capitalName;
-        countryCapitals[countryName].areas[areaId] = area;
+
+        // 仅当区域文本中出现 `>首都名<` 时，才将该区域计入首都区域
+        const matchesCapitalArea =
+          areaContainsTagDelimitedName(area?.markup, capitalName) ||
+          areaContainsTagDelimitedName(area?.label, capitalName) ||
+          areaContainsTagDelimitedName(area?.desc, capitalName);
+
+        if (matchesCapitalArea) {
+          countryCapitals[countryName].areas[areaId] = area;
+        }
       }
     }
   }
