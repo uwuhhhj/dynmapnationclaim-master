@@ -978,6 +978,8 @@
           return;
         }
 
+        const normalizedBounds = pointBoundsToLatLngBounds(clipped, zoom);
+
         const width = Math.ceil(clipped.max.x - clipped.min.x);
         const height = Math.ceil(clipped.max.y - clipped.min.y);
         if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
@@ -998,6 +1000,12 @@
         const exportBoundsAtZoom = normalizePointBounds(normalizedBounds, exportZoom);
         const exportWidth = Math.ceil(exportBoundsAtZoom.max.x - exportBoundsAtZoom.min.x);
         const exportHeight = Math.ceil(exportBoundsAtZoom.max.y - exportBoundsAtZoom.min.y);
+        if (exportWidth > MAX_EXPORT_DIMENSION || exportHeight > MAX_EXPORT_DIMENSION) {
+          if (typeof displayStorageStatus === 'function') {
+            displayStorageStatus('error', `导出失败：导出范围过大（${exportWidth}×${exportHeight}）`);
+          }
+          return;
+        }
 
         const container = document.createElement('div');
         container.style.position = 'fixed';
@@ -1010,93 +1018,105 @@
         container.setAttribute('aria-hidden', 'true');
         document.body.appendChild(container);
 
-        const exportMap = L.map(container, {
-          crs,
-          zoomControl: false,
-          attributionControl: false,
-          preferCanvas: true,
-          zoomAnimation: false,
-          fadeAnimation: false,
-          markerZoomAnimation: false,
-          minZoom: exportZoom,
-          maxZoom: exportZoom,
-          zoomSnap: 0
-        });
+        let exportMap;
+        try {
+          exportMap = L.map(container, {
+            crs,
+            center: normalizedBounds.getCenter(),
+            zoom: exportZoom,
+            zoomControl: false,
+            attributionControl: false,
+            preferCanvas: true,
+            zoomAnimation: false,
+            fadeAnimation: false,
+            markerZoomAnimation: false,
+            minZoom: exportZoom,
+            maxZoom: exportZoom,
+            zoomSnap: 0
+          });
 
-        mirrorPanes(map, exportMap);
+          mirrorPanes(map, exportMap);
 
-        const normalizedBounds = pointBoundsToLatLngBounds(clipped, zoom);
-        exportMap.fitBounds(normalizedBounds, { animate: false, padding: [0, 0], maxZoom: exportZoom });
+          exportMap.fitBounds(normalizedBounds, { animate: false, padding: [0, 0], maxZoom: exportZoom });
 
-        const layerOrder = activeKeys;
-        layerOrder.forEach(key => {
-          const group = overlayLayers?.[key];
-          if (!group) {
-            return;
-          }
-
-          const groupLayers = [];
-          if (typeof group.eachLayer === 'function') {
-            group.eachLayer(layer => groupLayers.push(layer));
-          }
-
-          groupLayers.forEach(layer => {
-            const clonedLayer = cloneLeafletLayer(layer);
-            if (!clonedLayer) {
+          const layerOrder = activeKeys;
+          layerOrder.forEach(key => {
+            const group = overlayLayers?.[key];
+            if (!group) {
               return;
             }
 
-            if (typeof layer.getTooltip === 'function' && typeof clonedLayer.bindTooltip === 'function') {
-              const tooltip = layer.getTooltip();
-              if (tooltip) {
-                clonedLayer.bindTooltip(tooltip.getContent(), { ...tooltip.options });
-                if (tooltip.options?.permanent && typeof clonedLayer.openTooltip === 'function') {
-                  clonedLayer.openTooltip();
+            const groupLayers = [];
+            if (typeof group.eachLayer === 'function') {
+              group.eachLayer(layer => groupLayers.push(layer));
+            }
+
+            groupLayers.forEach(layer => {
+              const clonedLayer = cloneLeafletLayer(layer);
+              if (!clonedLayer) {
+                return;
+              }
+
+              if (typeof layer.getTooltip === 'function' && typeof clonedLayer.bindTooltip === 'function') {
+                const tooltip = layer.getTooltip();
+                if (tooltip) {
+                  clonedLayer.bindTooltip(tooltip.getContent(), { ...tooltip.options });
+                  if (tooltip.options?.permanent && typeof clonedLayer.openTooltip === 'function') {
+                    clonedLayer.openTooltip();
+                  }
                 }
               }
-            }
 
-            clonedLayer.addTo(exportMap);
+              clonedLayer.addTo(exportMap);
+            });
           });
-        });
 
-        await waitForNextFrame();
-        await waitForNextFrame();
+          await waitForNextFrame();
+          await waitForNextFrame();
 
-        const canvas = await html2canvas(container, {
-          backgroundColor: null,
-          scale: 1,
-          useCORS: true
-        });
+          const canvas = await html2canvas(container, {
+            backgroundColor: null,
+            scale: 1,
+            useCORS: true
+          });
 
-        exportMap.remove();
-        container.remove();
+          const date = new Date();
+          const datePart = date.toISOString().split('T')[0];
+          const modeSuffix = options?.topLeft ? 'clip' : 'full';
+          const filename = `dynmap-overlays-${modeSuffix}-${datePart}.png`;
 
-        const date = new Date();
-        const datePart = date.toISOString().split('T')[0];
-        const modeSuffix = options?.topLeft ? 'clip' : 'full';
-        const filename = `dynmap-overlays-${modeSuffix}-${datePart}.png`;
+          await new Promise((resolve, reject) => {
+            canvas.toBlob(blob => {
+              if (!blob) {
+                reject(new Error('Unable to generate PNG blob'));
+                return;
+              }
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = filename;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+              resolve();
+            }, 'image/png');
+          });
 
-        await new Promise((resolve, reject) => {
-          canvas.toBlob(blob => {
-            if (!blob) {
-              reject(new Error('Unable to generate PNG blob'));
-              return;
-            }
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            resolve();
-          }, 'image/png');
-        });
-
-        if (typeof displayStorageStatus === 'function') {
-          displayStorageStatus('success', `覆盖层图片已导出：${filename}`);
+          if (typeof displayStorageStatus === 'function') {
+            displayStorageStatus('success', `覆盖层图片已导出：${filename}`);
+          }
+        } finally {
+          try {
+            exportMap?.remove?.();
+          } catch (error) {
+            // ignore
+          }
+          try {
+            container.remove();
+          } catch (error) {
+            // ignore
+          }
         }
       }
 

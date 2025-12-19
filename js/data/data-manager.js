@@ -116,6 +116,75 @@ function extractPrimaryNameFromDesc(desc) {
   return token || null;
 }
 
+function parseCompactNumber(raw) {
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+  const normalized = String(raw).replace(/[,，\s]/g, '').trim();
+  if (!normalized) {
+    return null;
+  }
+  const value = Number(normalized);
+  return Number.isFinite(value) ? value : null;
+}
+
+function extractChunkCountFromDesc(desc) {
+  const clean = stripHtml(desc);
+  if (!clean) {
+    return null;
+  }
+
+  const match = clean.match(/区块[:：]\s*([0-9,，\s]+)/u);
+  if (!match || !match[1]) {
+    return null;
+  }
+
+  return parseCompactNumber(match[1]);
+}
+
+function extractTerritoryPlayersFromDesc(desc) {
+  const clean = stripHtml(desc);
+  if (!clean) {
+    return null;
+  }
+
+  const territoryPlayers = clean.match(/玩家\s*[（(]\s*(\d+)\s*[）)]/u);
+  if (territoryPlayers && territoryPlayers[1]) {
+    return parseCompactNumber(territoryPlayers[1]);
+  }
+
+  return null;
+}
+
+function extractCountryPlayersTotalFromDesc(desc) {
+  const clean = stripHtml(desc);
+  if (!clean) {
+    return null;
+  }
+
+  const countryTotal = clean.match(/玩家数量[:：]\s*([0-9,，\s]+)/u);
+  if (countryTotal && countryTotal[1]) {
+    return parseCompactNumber(countryTotal[1]);
+  }
+
+  return null;
+}
+
+function extractPlayersTotalFromDesc(desc, options = {}) {
+  const { scope = 'auto' } = options;
+
+  if (scope === 'territory') {
+    return extractTerritoryPlayersFromDesc(desc);
+  }
+
+  if (scope === 'country') {
+    return extractCountryPlayersTotalFromDesc(desc);
+  }
+
+  // auto: prefer country total when present, otherwise fall back to territory count.
+  return extractCountryPlayersTotalFromDesc(desc) ?? extractTerritoryPlayersFromDesc(desc);
+}
+
 // 校验区域文本是否以 >首都名< 的形式出现
 function areaContainsTagDelimitedName(source, name) {
   if (!source || !name || typeof source !== 'string' || typeof name !== 'string') {
@@ -263,10 +332,13 @@ async function loadOverlayDatasetItems(datasetKey) {
       }
       return Object.entries(markers).map(([id, marker]) => {
         const name = stripHtml(marker?.label) || stripHtml(marker?.name) || id;
+        const descSource = typeof marker?.desc === 'string' ? marker.desc : (typeof marker?.markup === 'string' ? marker.markup : '');
         const country =
           extractCountryFromDesc(marker?.markup) ||
           extractCountryFromDesc(marker?.desc) ||
           extractCountryFromDesc(marker?.label);
+        const chunks = extractChunkCountFromDesc(descSource);
+        const playersTotal = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
 
         const mcX = safeNumber(marker?.x);
         const mcZ = safeNumber(marker?.z);
@@ -279,7 +351,9 @@ async function loadOverlayDatasetItems(datasetKey) {
           mcX,
           mcZ,
           size: 0,
-          quantity: 1
+          quantity: 1,
+          chunks,
+          playersTotal
         };
       });
     }
@@ -294,6 +368,7 @@ async function loadOverlayDatasetItems(datasetKey) {
           return [];
         }
 
+        const descSource = typeof area?.desc === 'string' ? area.desc : (typeof area?.markup === 'string' ? area.markup : '');
         const name =
           extractPrimaryNameFromDesc(area?.markup) ||
           extractPrimaryNameFromDesc(area?.desc) ||
@@ -306,6 +381,9 @@ async function loadOverlayDatasetItems(datasetKey) {
           extractCountryFromDesc(area?.desc) ||
           extractCountryFromDesc(area?.label);
 
+        const chunks = extractChunkCountFromDesc(descSource);
+        const playersTotal = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
+
         return [
           {
             kind: 'polygon',
@@ -315,7 +393,9 @@ async function loadOverlayDatasetItems(datasetKey) {
             mcX: stats.centerX,
             mcZ: stats.centerZ,
             size: stats.area,
-            quantity: stats.vertexCount
+            quantity: stats.vertexCount,
+            chunks,
+            playersTotal
           }
         ];
       });
@@ -330,6 +410,10 @@ async function loadOverlayDatasetItems(datasetKey) {
       for (const [countryName, group] of Object.entries(countrySpawn)) {
         const spawns = Array.isArray(group?.spawns) ? group.spawns : [];
         spawns.forEach((spawn, index) => {
+          const markerData = spawn?.markerData;
+          const descSource = typeof markerData?.desc === 'string' ? markerData.desc : (typeof markerData?.markup === 'string' ? markerData.markup : '');
+          const chunks = extractChunkCountFromDesc(descSource);
+          const playersTotal = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
           const mcX = safeNumber(spawn?.x);
           const mcZ = safeNumber(spawn?.z);
           items.push({
@@ -340,7 +424,9 @@ async function loadOverlayDatasetItems(datasetKey) {
             mcX,
             mcZ,
             size: 0,
-            quantity: 1
+            quantity: 1,
+            chunks,
+            playersTotal
           });
         });
       }
@@ -362,12 +448,16 @@ async function loadOverlayDatasetItems(datasetKey) {
           if (!stats) {
             continue;
           }
+          const descSource = typeof area?.desc === 'string' ? area.desc : (typeof area?.markup === 'string' ? area.markup : '');
           const name =
             extractPrimaryNameFromDesc(area?.markup) ||
             extractPrimaryNameFromDesc(area?.desc) ||
             extractPrimaryNameFromDesc(area?.label) ||
             deriveTerritoryGroupingName(areaId, area) ||
             `区域 ${areaId.split('_')[0] || areaId}`;
+
+          const chunks = extractChunkCountFromDesc(descSource);
+          const playersTotal = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
 
           items.push({
             kind: 'polygon',
@@ -377,7 +467,9 @@ async function loadOverlayDatasetItems(datasetKey) {
             mcX: stats.centerX,
             mcZ: stats.centerZ,
             size: stats.area,
-            quantity: stats.vertexCount
+            quantity: stats.vertexCount,
+            chunks,
+            playersTotal
           });
         }
       }
@@ -401,6 +493,9 @@ async function loadOverlayDatasetItems(datasetKey) {
           if (!stats) {
             continue;
           }
+          const descSource = typeof area?.desc === 'string' ? area.desc : (typeof area?.markup === 'string' ? area.markup : '');
+          const chunks = extractChunkCountFromDesc(descSource);
+          const playersTotal = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
           items.push({
             kind: 'polygon',
             id: areaId,
@@ -409,7 +504,9 @@ async function loadOverlayDatasetItems(datasetKey) {
             mcX: stats.centerX,
             mcZ: stats.centerZ,
             size: stats.area,
-            quantity: stats.vertexCount
+            quantity: stats.vertexCount,
+            chunks,
+            playersTotal
           });
         }
       }
@@ -421,21 +518,29 @@ async function loadOverlayDatasetItems(datasetKey) {
         return [];
       }
 
+      const markers = await getStoredMarkers();
       const items = [];
       for (const [countryName, group] of Object.entries(countryCapitalsSpawn)) {
         const spawns = Array.isArray(group?.spawns) ? group.spawns : [];
         spawns.forEach((spawn, index) => {
+          const markerId = String(spawn?.markerId ?? `${countryName}:capitalSpawn:${index}`);
+          const markerData = markers && typeof markers === 'object' ? markers[markerId] : null;
+          const descSource = typeof markerData?.desc === 'string' ? markerData.desc : (typeof markerData?.markup === 'string' ? markerData.markup : '');
+          const chunks = extractChunkCountFromDesc(descSource);
+          const playersTotal = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
           const mcX = safeNumber(spawn?.x);
           const mcZ = safeNumber(spawn?.z);
           items.push({
             kind: 'point',
-            id: String(spawn?.markerId ?? `${countryName}:capitalSpawn:${index}`),
+            id: markerId,
             name: stripHtml(spawn?.name) || String(spawn?.markerId ?? countryName),
             country: formatCountry(countryName),
             mcX,
             mcZ,
             size: 0,
-            quantity: 1
+            quantity: 1,
+            chunks,
+            playersTotal
           });
         });
       }
@@ -450,7 +555,7 @@ function computeFilteredSortedItems() {
   const query = normalizeText(overlayListState.search);
   const filtered = query
     ? overlayListState.items.filter(item => {
-        const haystack = `${item.name} ${item.id} ${item.country}`.toLowerCase();
+        const haystack = `${item.name} ${item.id} ${item.country} ${item.chunks ?? ''} ${item.playersTotal ?? ''}`.toLowerCase();
         return haystack.includes(query);
       })
     : overlayListState.items.slice();
@@ -458,7 +563,7 @@ function computeFilteredSortedItems() {
   const direction = overlayListState.sortDirection === 'desc' ? -1 : 1;
   const field = overlayListState.sortField;
   filtered.sort((a, b) => {
-    if (field === 'size' || field === 'quantity') {
+    if (field === 'size' || field === 'quantity' || field === 'chunks' || field === 'playersTotal') {
       const av = Number.isFinite(a[field]) ? a[field] : 0;
       const bv = Number.isFinite(b[field]) ? b[field] : 0;
       if (av !== bv) {
@@ -518,14 +623,16 @@ function renderOverlayList(reset = false) {
     const countryClass = hasCountry ? 'data-row__pill' : 'data-row__pill is-empty';
 
     const safeName = String(item.name ?? '');
-    const safeId = String(item.id ?? '');
     const safeCountry = String(item.country ?? '无国家');
+    const chunkValue = item.chunks === null || item.chunks === undefined ? '-' : String(item.chunks);
+    const playersValue = item.playersTotal === null || item.playersTotal === undefined ? '-' : String(item.playersTotal);
 
     row.innerHTML = `
       <div>
         <div class="data-row__name" title="${safeName.replace(/\"/g, '&quot;')}">${safeName}</div>
         <div class="data-row__meta">
-          <div>ID：<span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">${safeId}</span></div>
+          <div>区块：${chunkValue}</div>
+          <div>玩家总数：${playersValue}</div>
         </div>
       </div>
       <div class="${countryClass}">${safeCountry}</div>
