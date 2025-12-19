@@ -19,7 +19,8 @@
       territoryAreas: L.layerGroup(),
       countrySpawn: L.layerGroup(),
       countryAreas: L.layerGroup(),
-      countryCapitals: L.layerGroup()
+      countryCapitals: L.layerGroup(),
+      countryCapitalsSpawn: L.layerGroup()
     };
     //默认不加载图层
     //Object.values(overlayLayers).forEach(layer => layer.addTo(map));
@@ -33,7 +34,8 @@
       '领地区域（面）': overlayLayers.territoryAreas,
       '国家出生点（点）': overlayLayers.countrySpawn,
       '国家区域（面）': overlayLayers.countryAreas,
-      '国家首都': overlayLayers.countryCapitals
+      '国家首都': overlayLayers.countryCapitals,
+      '首都出生点（点）': overlayLayers.countryCapitalsSpawn
     }, {
       position: 'topleft'
     }).addTo(map);
@@ -79,7 +81,8 @@
         territoryAreas: [],
         countrySpawn: [],
         countryAreas: [],
-        countryCapitals: []
+        countryCapitals: [],
+        countryCapitalsSpawn: []
       };
 
       const CAPITAL_COLOR_SCHEMES = {
@@ -272,6 +275,36 @@
         });
       }
 
+      function updateCountryCapitalSpawns(countryCapitalsSpawn) {
+        clearOverlay('countryCapitalsSpawn');
+
+        if (!countryCapitalsSpawn || typeof countryCapitalsSpawn !== 'object') {
+          return;
+        }
+
+        Object.entries(countryCapitalsSpawn).forEach(([countryName, data]) => {
+          (data?.spawns || []).forEach(spawn => {
+            const coords = mcToMapCoords(spawn?.x, spawn?.z);
+            if (!coords) {
+              return;
+            }
+
+            const spawnMarker = L.circleMarker(coords, {
+              radius: 6,
+              weight: 2,
+              color: '#a855f7',
+              fillColor: '#a855f7',
+              fillOpacity: 0.95
+            });
+
+            const details = spawn?.name ? `首都：${spawn.name}` : '首都出生点';
+            bindPopup(spawnMarker, countryName, details);
+            overlayLayers.countryCapitalsSpawn.addLayer(spawnMarker);
+            overlayContent.countryCapitalsSpawn.push(spawnMarker);
+          });
+        });
+      }
+
       function updateCountryAreas(countryAreas) {
         clearOverlay('countryAreas');
 
@@ -383,6 +416,7 @@
         updateTerritoryMarkers(detail.markers || {});
         updateTerritoryAreas(detail.areas || {});
         updateCountrySpawns(detail.countrySpawn || {});
+        updateCountryCapitalSpawns(detail.countryCapitalsSpawn || {});
         updateCountryAreas(detail.countryAreas || {});
         updateCountryCapitals(detail.countryCapitals || {});
       }
@@ -393,7 +427,7 @@
           return;
         }
 
-        const storageKeys = ['landMarkers', 'landAreas', 'countrySpawn', 'countryAreas', 'countryCapitals', 'capitalColorModes'];
+        const storageKeys = ['landMarkers', 'landAreas', 'countrySpawn', 'countryCapitalsSpawn', 'countryAreas', 'countryCapitals', 'capitalColorModes'];
         const results = await Promise.all(storageKeys.map(key => window.IndexedDBStorage.getItem(key)));
         const parsed = {};
         storageKeys.forEach((key, index) => {
@@ -414,6 +448,7 @@
           markers: parsed.landMarkers,
           areas: parsed.landAreas,
           countrySpawn: parsed.countrySpawn,
+          countryCapitalsSpawn: parsed.countryCapitalsSpawn,
           countryAreas: parsed.countryAreas,
           countryCapitals: parsed.countryCapitals,
           capitalColorModes: parsed.capitalColorModes || {}

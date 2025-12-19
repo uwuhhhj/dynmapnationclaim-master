@@ -13,6 +13,7 @@ const STORAGE_KEYS = Object.freeze({
   countrySpawn: 'countrySpawn',
   countryAreas: 'countryAreas',
   countryCapitals: 'countryCapitals',
+  countryCapitalsSpawn: 'countryCapitalsSpawn',
   countryClaims: 'countryClaims',
   claimsConfig: 'claimsConfig',
   conflictResolvedBoundaries: 'conflictResolvedBoundaries',
@@ -78,6 +79,21 @@ function extractCapitalFromDescStrict(desc) {
   }
 
   return null;
+}
+
+function extractPrimaryNameFromDesc(desc) {
+  const cleanDesc = stripHtml(desc);
+  if (!cleanDesc) {
+    return null;
+  }
+
+  const firstLine = cleanDesc.split(/\n/u)[0]?.trim();
+  if (!firstLine) {
+    return null;
+  }
+
+  const token = firstLine.split(/[\s，。:：；;]+/u)[0]?.trim();
+  return token || null;
 }
 
 // 校验区域文本是否以 >首都名< 的形式出现
@@ -263,6 +279,7 @@ async function fetchAndStoreAllData(options = {}) {
       countrySpawn: countryData?.countrySpawn ?? {},
       countryAreas: countryData?.countryAreas ?? {},
       countryCapitals: countryData?.countryCapitals ?? {},
+      countryCapitalsSpawn: countryData?.countryCapitalsSpawn ?? {},
       capitalColorModes: storedCapitalColorModes ?? {}
     });
 
@@ -298,12 +315,13 @@ async function processCountryData(markers, areas) {
 
   if (!markerData && !areaData) {
     logger.warn('No marker or area data available for country processing.');
-    return { countrySpawn: {}, countryAreas: {}, countryCapitals: {} };
+    return { countrySpawn: {}, countryAreas: {}, countryCapitals: {}, countryCapitalsSpawn: {} };
   }
 
   const countrySpawn = {};
   const countryAreas = {};
   const countryCapitals = {};
+  const countryCapitalsSpawn = {};
 
   if (markerData) {
     for (const [markerId, marker] of Object.entries(markerData)) {
@@ -384,17 +402,147 @@ async function processCountryData(markers, areas) {
     }
   }
 
+  Object.entries(countryCapitals).forEach(([countryName, capitalInfo]) => {
+    if (!capitalInfo || typeof capitalInfo !== 'object') {
+      return;
+    }
+
+    if (!capitalInfo.areas || typeof capitalInfo.areas !== 'object') {
+      capitalInfo.areas = {};
+    }
+
+    if (Object.keys(capitalInfo.areas).length > 0) {
+      return;
+    }
+
+    const capitalName = capitalInfo.name;
+    if (!capitalName) {
+      return;
+    }
+
+    const ownedAreas = countryAreas[countryName];
+    if (!ownedAreas || typeof ownedAreas !== 'object') {
+      return;
+    }
+
+    const entries = Object.entries(ownedAreas);
+    if (!entries.length) {
+      return;
+    }
+
+    const exactMatch = entries.find(([, area]) => {
+      const primaryName =
+        extractPrimaryNameFromDesc(area?.markup) ||
+        extractPrimaryNameFromDesc(area?.desc) ||
+        extractPrimaryNameFromDesc(area?.label);
+      return primaryName === capitalName;
+    });
+
+    if (exactMatch) {
+      const [areaId, area] = exactMatch;
+      capitalInfo.areas[areaId] = area;
+      return;
+    }
+
+    const includesMatch = entries.find(([, area]) => {
+      const cleanText = stripHtml(area?.markup) || stripHtml(area?.desc) || stripHtml(area?.label);
+      return cleanText ? cleanText.includes(capitalName) : false;
+    });
+
+    if (includesMatch) {
+      const [areaId, area] = includesMatch;
+      capitalInfo.areas[areaId] = area;
+      return;
+    }
+
+    if (entries.length === 1) {
+      const [areaId, area] = entries[0];
+      capitalInfo.areas[areaId] = area;
+    }
+  });
+
+  if (markerData) {
+    Object.entries(countryCapitals).forEach(([countryName, capitalInfo]) => {
+      const capitalName = capitalInfo?.name || countryName;
+      const capitalAreas = capitalInfo?.areas || {};
+      const areaIds = Object.keys(capitalAreas);
+
+      let spawnMarkerId = null;
+      let spawnMarker = null;
+      let sourceAreaId = null;
+
+      if (areaIds.length) {
+        sourceAreaId = areaIds[0];
+        const underscoreIdx = sourceAreaId.lastIndexOf('_');
+        const baseId = underscoreIdx > 0 ? sourceAreaId.slice(0, underscoreIdx) : sourceAreaId;
+        const candidateMarkerId = `${baseId}_spawn`;
+        const candidateMarker = markerData[candidateMarkerId];
+        if (candidateMarker && candidateMarker.x !== undefined && candidateMarker.z !== undefined) {
+          spawnMarkerId = candidateMarkerId;
+          spawnMarker = candidateMarker;
+        }
+      }
+
+      if (!spawnMarker) {
+        const targetLabel = String(capitalName || '');
+        for (const [markerId, marker] of Object.entries(markerData)) {
+          if (!markerId.endsWith('_spawn')) {
+            continue;
+          }
+          if (marker?.label !== targetLabel) {
+            continue;
+          }
+
+          const parsedCountry =
+            extractCountryFromDesc(marker?.markup) ||
+            extractCountryFromDesc(marker?.desc) ||
+            extractCountryFromDesc(marker?.label);
+
+          if (parsedCountry && parsedCountry !== countryName) {
+            continue;
+          }
+
+          if (marker?.x === undefined || marker?.z === undefined) {
+            continue;
+          }
+
+          spawnMarkerId = markerId;
+          spawnMarker = marker;
+          break;
+        }
+      }
+
+      if (!spawnMarker || spawnMarker.x === undefined || spawnMarker.z === undefined) {
+        return;
+      }
+
+      countryCapitalsSpawn[countryName] = {
+        spawns: [
+          {
+            x: spawnMarker.x,
+            z: spawnMarker.z,
+            y: spawnMarker.y ?? 64,
+            name: capitalName,
+            markerId: spawnMarkerId,
+            sourceAreaId
+          }
+        ]
+      };
+    });
+  }
+
   await Promise.all([
     setStoredJson(STORAGE_KEYS.countrySpawn, countrySpawn),
     setStoredJson(STORAGE_KEYS.countryAreas, countryAreas),
-    setStoredJson(STORAGE_KEYS.countryCapitals, countryCapitals)
+    setStoredJson(STORAGE_KEYS.countryCapitals, countryCapitals),
+    setStoredJson(STORAGE_KEYS.countryCapitalsSpawn, countryCapitalsSpawn)
   ]);
 
   logger.info(
     `Country data stored. spawn groups: ${Object.keys(countrySpawn).length}, area groups: ${Object.keys(countryAreas).length}, capital groups: ${Object.keys(countryCapitals).length}`
   );
 
-  return { countrySpawn, countryAreas, countryCapitals };
+  return { countrySpawn, countryAreas, countryCapitals, countryCapitalsSpawn };
 }
 
 function extractCapitalFromDesc(desc) {
@@ -421,6 +569,10 @@ async function getStoredCountryAreas() {
 
 async function getStoredCountryCapitals() {
   return getStoredJson(STORAGE_KEYS.countryCapitals);
+}
+
+async function getStoredCountryCapitalsSpawn() {
+  return getStoredJson(STORAGE_KEYS.countryCapitalsSpawn);
 }
 
 async function getStoredCapitalColorModes() {
@@ -904,12 +1056,13 @@ async function toggleDataView() {
 async function viewStoredData() {
   await updateDataDisplay();
 
-  const [markers, areas, countrySpawn, countryAreas, countryCapitals, capitalColorModes, countryClaims] = await Promise.all([
+  const [markers, areas, countrySpawn, countryAreas, countryCapitals, countryCapitalsSpawn, capitalColorModes, countryClaims] = await Promise.all([
     getStoredMarkers(),
     getStoredAreas(),
     getStoredCountrySpawn(),
     getStoredCountryAreas(),
     getStoredCountryCapitals(),
+    getStoredCountryCapitalsSpawn(),
     getStoredCapitalColorModes(),
     getStoredCountryClaims()
   ]);
@@ -919,12 +1072,13 @@ async function viewStoredData() {
   const countrySpawnCount = countrySpawn ? Object.keys(countrySpawn).length : 0;
   const countryAreasCount = countryAreas ? Object.keys(countryAreas).length : 0;
   const countryCapitalsCount = countryCapitals ? Object.keys(countryCapitals).length : 0;
+  const countryCapitalsSpawnCount = countryCapitalsSpawn ? Object.keys(countryCapitalsSpawn).length : 0;
   const capitalColorCount = capitalColorModes ? Object.keys(capitalColorModes).length : 0;
   const countryClaimsCount = countryClaims ? Object.keys(countryClaims).length : 0;
 
   displayStorageStatus(
     'success',
-    `显示了 ${markersCount} 个标记、${areasCount} 个区域、${countrySpawnCount} 个国家标记、${countryAreasCount} 个国家区域、${countryCapitalsCount} 个国家首都、${capitalColorCount} 个首都配色、${countryClaimsCount} 个国家宣称`
+    `显示了 ${markersCount} 个标记、${areasCount} 个区域、${countrySpawnCount} 个国家标记、${countryAreasCount} 个国家区域、${countryCapitalsCount} 个国家首都、${countryCapitalsSpawnCount} 个首都出生点、${capitalColorCount} 个首都配色、${countryClaimsCount} 个国家宣称`
   );
 }
 
@@ -951,6 +1105,7 @@ async function clearStoredData() {
       removeStoredItem(STORAGE_KEYS.countrySpawn),
       removeStoredItem(STORAGE_KEYS.countryAreas),
       removeStoredItem(STORAGE_KEYS.countryCapitals),
+      removeStoredItem(STORAGE_KEYS.countryCapitalsSpawn),
       removeStoredItem(STORAGE_KEYS.capitalColorModes),
       removeStoredItem(STORAGE_KEYS.countryClaims),
       removeStoredItem(STORAGE_KEYS.conflictResolvedBoundaries)
@@ -963,7 +1118,8 @@ async function clearStoredData() {
       areas: {},
       countrySpawn: {},
       countryAreas: {},
-      countryCapitals: {}
+      countryCapitals: {},
+      countryCapitalsSpawn: {}
     });
     await updateDataDisplay();
   } catch (error) {
@@ -980,12 +1136,13 @@ async function initializeDataManager() {
   logger.info('Initializing data manager…');
   displayStorageStatus('info', '正在初始化数据…');
 
-  const [cachedMarkers, cachedAreas, cachedSpawn, cachedCountryAreas, cachedCapitals, cachedCapitalColors, cachedClaims] = await Promise.all([
+  const [cachedMarkers, cachedAreas, cachedSpawn, cachedCountryAreas, cachedCapitals, cachedCapitalsSpawn, cachedCapitalColors, cachedClaims] = await Promise.all([
     getStoredMarkers(),
     getStoredAreas(),
     getStoredCountrySpawn(),
     getStoredCountryAreas(),
     getStoredCountryCapitals(),
+    getStoredCountryCapitalsSpawn(),
     getStoredCapitalColorModes(),
     getStoredCountryClaims()
   ]);
@@ -996,6 +1153,7 @@ async function initializeDataManager() {
     spawn: cachedSpawn ? Object.keys(cachedSpawn).length : 0,
     countryAreas: cachedCountryAreas ? Object.keys(cachedCountryAreas).length : 0,
     capitals: cachedCapitals ? Object.keys(cachedCapitals).length : 0,
+    capitalsSpawn: cachedCapitalsSpawn ? Object.keys(cachedCapitalsSpawn).length : 0,
     capitalColors: cachedCapitalColors ? Object.keys(cachedCapitalColors).length : 0,
     claims: cachedClaims ? Object.keys(cachedClaims).length : 0
   };
@@ -1010,12 +1168,13 @@ async function initializeDataManager() {
       countrySpawn: cachedSpawn ?? {},
       countryAreas: cachedCountryAreas ?? {},
       countryCapitals: cachedCapitals ?? {},
+      countryCapitalsSpawn: cachedCapitalsSpawn ?? {},
       capitalColorModes: cachedCapitalColors ?? {}
     });
     await updateDataDisplay();
     displayStorageStatus(
       'info',
-      `使用本地缓存：标记 ${cachedCounts.markers}、区域 ${cachedCounts.areas}、国家标记 ${cachedCounts.spawn}、国家区域 ${cachedCounts.countryAreas}、国家首都 ${cachedCounts.capitals}、首都配色 ${cachedCounts.capitalColors}`
+      `使用本地缓存：标记 ${cachedCounts.markers}、区域 ${cachedCounts.areas}、国家标记 ${cachedCounts.spawn}、国家区域 ${cachedCounts.countryAreas}、国家首都 ${cachedCounts.capitals}、首都出生点 ${cachedCounts.capitalsSpawn}、首都配色 ${cachedCounts.capitalColors}`
     );
   }
 
