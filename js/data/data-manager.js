@@ -20,7 +20,27 @@ const STORAGE_KEYS = Object.freeze({
   capitalColorModes: 'capitalColorModes'
 });
 
-let currentDataView = 'markers'; // 'markers' | 'areas' | 'countrySpawn' | 'countryAreas'
+const OVERLAY_DATASETS = Object.freeze([
+  { key: 'territoryMarkers', label: '领地标记（点）' },
+  { key: 'territoryAreas', label: '领地区域（面）' },
+  { key: 'countrySpawn', label: '国家出生点（点）' },
+  { key: 'countryAreas', label: '国家区域（面）' },
+  { key: 'countryCapitals', label: '国家首都' },
+  { key: 'countryCapitalsSpawn', label: '首都出生点（点）' }
+]);
+
+const overlayListState = {
+  datasetKey: 'territoryMarkers',
+  search: '',
+  sortField: 'id',
+  sortDirection: 'asc',
+  items: [],
+  filteredSortedItems: [],
+  visibleCount: 0,
+  batchSize: 80
+};
+
+let overlayListObserver = null;
 
 /**
  * 通用工具函数
@@ -140,6 +160,520 @@ function deriveTerritoryGroupingName(identifier, source) {
   }
 
   return null;
+}
+
+function safeNumber(value) {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function polygonStatsFromXZ(xValues, zValues) {
+  if (!Array.isArray(xValues) || !Array.isArray(zValues) || xValues.length !== zValues.length) {
+    return null;
+  }
+
+  const points = [];
+  for (let i = 0; i < xValues.length; i += 1) {
+    const x = safeNumber(xValues[i]);
+    const z = safeNumber(zValues[i]);
+    if (x === null || z === null) {
+      continue;
+    }
+    points.push([x, z]);
+  }
+
+  if (points.length === 0) {
+    return null;
+  }
+
+  let minX = points[0][0];
+  let maxX = points[0][0];
+  let minZ = points[0][1];
+  let maxZ = points[0][1];
+
+  for (const [x, z] of points) {
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minZ = Math.min(minZ, z);
+    maxZ = Math.max(maxZ, z);
+  }
+
+  const centerX = (minX + maxX) / 2;
+  const centerZ = (minZ + maxZ) / 2;
+
+  let area = 0;
+  if (points.length >= 3) {
+    for (let i = 0; i < points.length; i += 1) {
+      const [x1, z1] = points[i];
+      const [x2, z2] = points[(i + 1) % points.length];
+      area += x1 * z2 - x2 * z1;
+    }
+    area = Math.abs(area / 2);
+  }
+
+  return {
+    minX,
+    maxX,
+    minZ,
+    maxZ,
+    centerX,
+    centerZ,
+    area,
+    vertexCount: points.length
+  };
+}
+
+function normalizeText(value) {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function formatCountry(value) {
+  const clean = String(value ?? '').trim();
+  return clean ? clean : '无国家';
+}
+
+function focusMapAtMc(mcX, mcZ) {
+  const overlayApi = window.DynmapOverlayLayers;
+  const focusFn = overlayApi?.focusMc;
+  if (typeof focusFn === 'function') {
+    return focusFn(mcX, mcZ);
+  }
+
+  const map = overlayApi?.map;
+  const converter = overlayApi?.mcToMapCoords;
+  if (map && typeof converter === 'function') {
+    const coords = converter(mcX, mcZ);
+    if (!coords) {
+      return false;
+    }
+    map.setView(coords, Math.min(map.getMaxZoom?.() ?? 2, 2), { animate: true });
+    return true;
+  }
+
+  logger.warn('Map focus requested but overlay API is missing.');
+  return false;
+}
+
+async function loadOverlayDatasetItems(datasetKey) {
+  switch (datasetKey) {
+    case 'territoryMarkers': {
+      const markers = await getStoredMarkers();
+      if (!markers || typeof markers !== 'object') {
+        return [];
+      }
+      return Object.entries(markers).map(([id, marker]) => {
+        const name = stripHtml(marker?.label) || stripHtml(marker?.name) || id;
+        const country =
+          extractCountryFromDesc(marker?.markup) ||
+          extractCountryFromDesc(marker?.desc) ||
+          extractCountryFromDesc(marker?.label);
+
+        const mcX = safeNumber(marker?.x);
+        const mcZ = safeNumber(marker?.z);
+
+        return {
+          kind: 'point',
+          id,
+          name,
+          country: formatCountry(country),
+          mcX,
+          mcZ,
+          size: 0,
+          quantity: 1
+        };
+      });
+    }
+    case 'territoryAreas': {
+      const areas = await getStoredAreas();
+      if (!areas || typeof areas !== 'object') {
+        return [];
+      }
+      return Object.entries(areas).flatMap(([id, area]) => {
+        const stats = polygonStatsFromXZ(area?.x, area?.z);
+        if (!stats) {
+          return [];
+        }
+
+        const name =
+          extractPrimaryNameFromDesc(area?.markup) ||
+          extractPrimaryNameFromDesc(area?.desc) ||
+          extractPrimaryNameFromDesc(area?.label) ||
+          deriveTerritoryGroupingName(id, area) ||
+          `区域 ${id.split('_')[0] || id}`;
+
+        const country =
+          extractCountryFromDesc(area?.markup) ||
+          extractCountryFromDesc(area?.desc) ||
+          extractCountryFromDesc(area?.label);
+
+        return [
+          {
+            kind: 'polygon',
+            id,
+            name,
+            country: formatCountry(country),
+            mcX: stats.centerX,
+            mcZ: stats.centerZ,
+            size: stats.area,
+            quantity: stats.vertexCount
+          }
+        ];
+      });
+    }
+    case 'countrySpawn': {
+      const countrySpawn = await getStoredCountrySpawn();
+      if (!countrySpawn || typeof countrySpawn !== 'object') {
+        return [];
+      }
+
+      const items = [];
+      for (const [countryName, group] of Object.entries(countrySpawn)) {
+        const spawns = Array.isArray(group?.spawns) ? group.spawns : [];
+        spawns.forEach((spawn, index) => {
+          const mcX = safeNumber(spawn?.x);
+          const mcZ = safeNumber(spawn?.z);
+          items.push({
+            kind: 'point',
+            id: String(spawn?.markerId ?? `${countryName}:spawn:${index}`),
+            name: stripHtml(spawn?.name) || String(spawn?.markerId ?? countryName),
+            country: formatCountry(countryName),
+            mcX,
+            mcZ,
+            size: 0,
+            quantity: 1
+          });
+        });
+      }
+      return items;
+    }
+    case 'countryAreas': {
+      const countryAreas = await getStoredCountryAreas();
+      if (!countryAreas || typeof countryAreas !== 'object') {
+        return [];
+      }
+
+      const items = [];
+      for (const [countryName, areas] of Object.entries(countryAreas)) {
+        if (!areas || typeof areas !== 'object') {
+          continue;
+        }
+        for (const [areaId, area] of Object.entries(areas)) {
+          const stats = polygonStatsFromXZ(area?.x, area?.z);
+          if (!stats) {
+            continue;
+          }
+          const name =
+            extractPrimaryNameFromDesc(area?.markup) ||
+            extractPrimaryNameFromDesc(area?.desc) ||
+            extractPrimaryNameFromDesc(area?.label) ||
+            deriveTerritoryGroupingName(areaId, area) ||
+            `区域 ${areaId.split('_')[0] || areaId}`;
+
+          items.push({
+            kind: 'polygon',
+            id: areaId,
+            name,
+            country: formatCountry(countryName),
+            mcX: stats.centerX,
+            mcZ: stats.centerZ,
+            size: stats.area,
+            quantity: stats.vertexCount
+          });
+        }
+      }
+      return items;
+    }
+    case 'countryCapitals': {
+      const countryCapitals = await getStoredCountryCapitals();
+      if (!countryCapitals || typeof countryCapitals !== 'object') {
+        return [];
+      }
+
+      const items = [];
+      for (const [countryName, capitalInfo] of Object.entries(countryCapitals)) {
+        const capitalName = stripHtml(capitalInfo?.name) || String(countryName);
+        const areas = capitalInfo?.areas;
+        if (!areas || typeof areas !== 'object') {
+          continue;
+        }
+        for (const [areaId, area] of Object.entries(areas)) {
+          const stats = polygonStatsFromXZ(area?.x, area?.z);
+          if (!stats) {
+            continue;
+          }
+          items.push({
+            kind: 'polygon',
+            id: areaId,
+            name: capitalName,
+            country: formatCountry(countryName),
+            mcX: stats.centerX,
+            mcZ: stats.centerZ,
+            size: stats.area,
+            quantity: stats.vertexCount
+          });
+        }
+      }
+      return items;
+    }
+    case 'countryCapitalsSpawn': {
+      const countryCapitalsSpawn = await getStoredCountryCapitalsSpawn();
+      if (!countryCapitalsSpawn || typeof countryCapitalsSpawn !== 'object') {
+        return [];
+      }
+
+      const items = [];
+      for (const [countryName, group] of Object.entries(countryCapitalsSpawn)) {
+        const spawns = Array.isArray(group?.spawns) ? group.spawns : [];
+        spawns.forEach((spawn, index) => {
+          const mcX = safeNumber(spawn?.x);
+          const mcZ = safeNumber(spawn?.z);
+          items.push({
+            kind: 'point',
+            id: String(spawn?.markerId ?? `${countryName}:capitalSpawn:${index}`),
+            name: stripHtml(spawn?.name) || String(spawn?.markerId ?? countryName),
+            country: formatCountry(countryName),
+            mcX,
+            mcZ,
+            size: 0,
+            quantity: 1
+          });
+        });
+      }
+      return items;
+    }
+    default:
+      return [];
+  }
+}
+
+function computeFilteredSortedItems() {
+  const query = normalizeText(overlayListState.search);
+  const filtered = query
+    ? overlayListState.items.filter(item => {
+        const haystack = `${item.name} ${item.id} ${item.country}`.toLowerCase();
+        return haystack.includes(query);
+      })
+    : overlayListState.items.slice();
+
+  const direction = overlayListState.sortDirection === 'desc' ? -1 : 1;
+  const field = overlayListState.sortField;
+  filtered.sort((a, b) => {
+    if (field === 'size' || field === 'quantity') {
+      const av = Number.isFinite(a[field]) ? a[field] : 0;
+      const bv = Number.isFinite(b[field]) ? b[field] : 0;
+      if (av !== bv) {
+        return (av - bv) * direction;
+      }
+      return String(a.id).localeCompare(String(b.id)) * direction;
+    }
+
+    const av = String(a[field] ?? '');
+    const bv = String(b[field] ?? '');
+    const cmp = av.localeCompare(bv, 'zh-Hans-CN-u-co-pinyin');
+    if (cmp !== 0) {
+      return cmp * direction;
+    }
+    return String(a.id).localeCompare(String(b.id)) * direction;
+  });
+
+  overlayListState.filteredSortedItems = filtered;
+}
+
+function renderOverlayList(reset = false) {
+  const dataList = document.getElementById('data-list');
+  const dataTitle = document.getElementById('data-display-title');
+  if (!dataList || !dataTitle) {
+    return;
+  }
+
+  const dataset = OVERLAY_DATASETS.find(item => item.key === overlayListState.datasetKey);
+  dataTitle.textContent = `📋 覆盖层数据：${dataset?.label ?? overlayListState.datasetKey}`;
+
+  if (reset) {
+    overlayListState.visibleCount = Math.min(overlayListState.batchSize, overlayListState.filteredSortedItems.length);
+    dataList.innerHTML = '';
+  }
+
+  if (overlayListState.filteredSortedItems.length === 0) {
+    if (reset) {
+      dataList.innerHTML = '<div class="data-sentinel">暂无数据（请先点击“获取最新数据”）</div>';
+    }
+    return;
+  }
+
+  const end = overlayListState.visibleCount;
+  const fragment = document.createDocumentFragment();
+
+  const existingRows = dataList.querySelectorAll('.data-row').length;
+  for (let i = existingRows; i < Math.min(end, overlayListState.filteredSortedItems.length); i += 1) {
+    const item = overlayListState.filteredSortedItems[i];
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'data-row';
+    row.dataset.mcX = item.mcX ?? '';
+    row.dataset.mcZ = item.mcZ ?? '';
+    row.dataset.itemId = item.id;
+
+    const hasCountry = item.country && item.country !== '无国家';
+    const countryClass = hasCountry ? 'data-row__pill' : 'data-row__pill is-empty';
+
+    const safeName = String(item.name ?? '');
+    const safeId = String(item.id ?? '');
+    const safeCountry = String(item.country ?? '无国家');
+
+    row.innerHTML = `
+      <div>
+        <div class="data-row__name" title="${safeName.replace(/\"/g, '&quot;')}">${safeName}</div>
+        <div class="data-row__meta">
+          <div>ID：<span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">${safeId}</span></div>
+        </div>
+      </div>
+      <div class="${countryClass}">${safeCountry}</div>
+    `;
+
+    fragment.appendChild(row);
+  }
+
+  let sentinel = dataList.querySelector('#data-list-sentinel');
+  if (!sentinel) {
+    sentinel = document.createElement('div');
+    sentinel.id = 'data-list-sentinel';
+    sentinel.className = 'data-sentinel';
+    dataList.appendChild(sentinel);
+  }
+
+  dataList.insertBefore(fragment, sentinel);
+
+  const hasMore = overlayListState.visibleCount < overlayListState.filteredSortedItems.length;
+  sentinel.textContent = hasMore ? `继续滚动加载（已显示 ${Math.min(end, overlayListState.filteredSortedItems.length)} / ${overlayListState.filteredSortedItems.length}）` : `已显示全部 ${overlayListState.filteredSortedItems.length} 条`;
+}
+
+function ensureOverlayListObserver() {
+  if (overlayListObserver) {
+    return;
+  }
+
+  const panel = document.querySelector('.control-panel');
+  const dataList = document.getElementById('data-list');
+  if (!panel || !dataList) {
+    return;
+  }
+
+  overlayListObserver = new IntersectionObserver(
+    entries => {
+      const entry = entries[0];
+      if (!entry?.isIntersecting) {
+        return;
+      }
+
+      if (overlayListState.visibleCount >= overlayListState.filteredSortedItems.length) {
+        return;
+      }
+
+      overlayListState.visibleCount = Math.min(
+        overlayListState.visibleCount + overlayListState.batchSize,
+        overlayListState.filteredSortedItems.length
+      );
+      renderOverlayList(false);
+    },
+    { root: panel, threshold: 0.15 }
+  );
+
+  const sentinel = dataList.querySelector('#data-list-sentinel');
+  if (sentinel) {
+    overlayListObserver.observe(sentinel);
+  }
+}
+
+function refreshOverlayListObserver() {
+  const dataList = document.getElementById('data-list');
+  if (!overlayListObserver || !dataList) {
+    return;
+  }
+  const sentinel = dataList.querySelector('#data-list-sentinel');
+  if (sentinel) {
+    overlayListObserver.disconnect();
+    overlayListObserver.observe(sentinel);
+  }
+}
+
+async function updateOverlayList(reset = true) {
+  overlayListState.items = await loadOverlayDatasetItems(overlayListState.datasetKey);
+  computeFilteredSortedItems();
+  renderOverlayList(reset);
+  ensureOverlayListObserver();
+  refreshOverlayListObserver();
+}
+
+function initializeOverlayListUI() {
+  const datasetSelect = document.getElementById('overlay-dataset-select');
+  const searchInput = document.getElementById('overlay-search');
+  const sortField = document.getElementById('overlay-sort-field');
+  const sortDirection = document.getElementById('overlay-sort-direction');
+  const dataList = document.getElementById('data-list');
+
+  if (datasetSelect) {
+    datasetSelect.value = overlayListState.datasetKey;
+    datasetSelect.addEventListener('change', async () => {
+      overlayListState.datasetKey = datasetSelect.value;
+      await updateOverlayList(true);
+    });
+  }
+
+  if (searchInput) {
+    let timer = null;
+    searchInput.addEventListener('input', () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        overlayListState.search = searchInput.value;
+        computeFilteredSortedItems();
+        renderOverlayList(true);
+        refreshOverlayListObserver();
+      }, 120);
+    });
+  }
+
+  if (sortField) {
+    sortField.value = overlayListState.sortField;
+    sortField.addEventListener('change', () => {
+      overlayListState.sortField = sortField.value;
+      computeFilteredSortedItems();
+      renderOverlayList(true);
+      refreshOverlayListObserver();
+    });
+  }
+
+  if (sortDirection) {
+    sortDirection.value = overlayListState.sortDirection;
+    sortDirection.addEventListener('change', () => {
+      overlayListState.sortDirection = sortDirection.value;
+      computeFilteredSortedItems();
+      renderOverlayList(true);
+      refreshOverlayListObserver();
+    });
+  }
+
+  if (dataList) {
+    dataList.addEventListener('click', event => {
+      const target = event.target;
+      const row = target?.closest?.('.data-row');
+      if (!row) {
+        return;
+      }
+
+      const mcX = safeNumber(row.dataset.mcX);
+      const mcZ = safeNumber(row.dataset.mcZ);
+      if (mcX === null || mcZ === null) {
+        displayStorageStatus('warning', '该条目没有可定位的坐标');
+        return;
+      }
+
+      const ok = focusMapAtMc(mcX, mcZ);
+      if (!ok) {
+        displayStorageStatus('warning', '地图尚未就绪，无法定位');
+      }
+    });
+  }
 }
 function emitDataUpdated(detail) {
   if (typeof document === 'undefined' || typeof CustomEvent !== 'function') {
@@ -641,30 +1175,7 @@ async function verifyCountryClaimsCleared() {
  */
 
 async function updateDataDisplay() {
-  switch (currentDataView) {
-    case 'markers': {
-      const markers = await getStoredMarkers();
-      displayMarkersOnPage(markers);
-      break;
-    }
-    case 'areas': {
-      const areas = await getStoredAreas();
-      displayAreasOnPage(areas);
-      break;
-    }
-    case 'countrySpawn': {
-      const countrySpawn = await getStoredCountrySpawn();
-      displayCountrySpawnOnPage(countrySpawn);
-      break;
-    }
-    case 'countryAreas': {
-      const countryAreas = await getStoredCountryAreas();
-      displayCountryAreasOnPage(countryAreas);
-      break;
-    }
-    default:
-      logger.warn('Unknown data view:', currentDataView);
-  }
+  await updateOverlayList(true);
 }
 
 function displayMarkersOnPage(markers) {
@@ -1021,36 +1532,17 @@ async function refreshAllData() {
 }
 
 async function toggleDataView() {
-  const viewCycle = ['markers', 'areas', 'countrySpawn', 'countryAreas'];
-  const currentIndex = viewCycle.indexOf(currentDataView);
-  currentDataView = viewCycle[(currentIndex + 1) % viewCycle.length];
+  const order = OVERLAY_DATASETS.map(item => item.key);
+  const currentIndex = Math.max(0, order.indexOf(overlayListState.datasetKey));
+  const nextKey = order[(currentIndex + 1) % order.length];
+  overlayListState.datasetKey = nextKey;
 
-  const toggleBtn = document.getElementById('data-view-toggle');
-  if (toggleBtn) {
-    switch (currentDataView) {
-      case 'markers':
-        toggleBtn.textContent = '🔄 切换到区域数据';
-        toggleBtn.style.backgroundColor = '#9C27B0';
-        break;
-      case 'areas':
-        toggleBtn.textContent = '🔄 切换到国家标记';
-        toggleBtn.style.backgroundColor = '#FF9800';
-        break;
-      case 'countrySpawn':
-        toggleBtn.textContent = '🔄 切换到国家区域';
-        toggleBtn.style.backgroundColor = '#4CAF50';
-        break;
-      case 'countryAreas':
-        toggleBtn.textContent = '🔄 切换到标记数据';
-        toggleBtn.style.backgroundColor = '#2196F3';
-        break;
-      default:
-        toggleBtn.textContent = '🔄 切换视图';
-        toggleBtn.style.backgroundColor = '#607D8B';
-    }
+  const datasetSelect = document.getElementById('overlay-dataset-select');
+  if (datasetSelect) {
+    datasetSelect.value = nextKey;
   }
 
-  await updateDataDisplay();
+  await updateOverlayList(true);
 }
 
 async function viewStoredData() {
@@ -1083,18 +1575,13 @@ async function viewStoredData() {
 }
 
 async function viewCountryData() {
-  const [countrySpawn, countryAreas] = await Promise.all([
-    getStoredCountrySpawn(),
-    getStoredCountryAreas()
-  ]);
-
-  if (!countrySpawn && !countryAreas) {
-    displayStorageStatus('warning', '暂无国家数据，请先获取。');
-    return;
+  const target = 'countryAreas';
+  overlayListState.datasetKey = target;
+  const datasetSelect = document.getElementById('overlay-dataset-select');
+  if (datasetSelect) {
+    datasetSelect.value = target;
   }
-
-  currentDataView = countrySpawn ? 'countrySpawn' : 'countryAreas';
-  await updateDataDisplay();
+  await updateOverlayList(true);
 }
 
 async function clearStoredData() {
@@ -1133,6 +1620,7 @@ async function clearStoredData() {
  */
 
 async function initializeDataManager() {
+  initializeOverlayListUI();
   logger.info('Initializing data manager…');
   displayStorageStatus('info', '正在初始化数据…');
 

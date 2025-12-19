@@ -45,7 +45,8 @@
       baseLayer,
       overlayLayers,
       overlayControl,
-      imageSize: { width: imageWidth, height: imageHeight }
+      imageSize: { width: imageWidth, height: imageHeight },
+      imageBounds: L.latLngBounds(imageBounds)
     };
 
     (function () {
@@ -274,6 +275,73 @@
 
         return [mapY, mapX];
       }
+
+      let focusPulseLayer = null;
+      let focusPulseTimer = null;
+
+      function pulseAt(coords) {
+        const map = overlayApi?.map;
+        if (!map || !coords || typeof L === 'undefined') {
+          return;
+        }
+
+        if (focusPulseTimer) {
+          window.clearTimeout(focusPulseTimer);
+          focusPulseTimer = null;
+        }
+
+        if (focusPulseLayer) {
+          try {
+            map.removeLayer(focusPulseLayer);
+          } catch (error) {
+            // ignore
+          }
+          focusPulseLayer = null;
+        }
+
+        focusPulseLayer = L.circleMarker(coords, {
+          radius: 10,
+          color: '#38bdf8',
+          weight: 3,
+          opacity: 0.9,
+          fillColor: '#38bdf8',
+          fillOpacity: 0.18
+        }).addTo(map);
+
+        focusPulseTimer = window.setTimeout(() => {
+          if (!focusPulseLayer) {
+            return;
+          }
+          try {
+            map.removeLayer(focusPulseLayer);
+          } catch (error) {
+            // ignore
+          }
+          focusPulseLayer = null;
+          focusPulseTimer = null;
+        }, 1200);
+      }
+
+      function focusMc(mcX, mcZ, options = {}) {
+        const map = overlayApi?.map;
+        if (!map) {
+          return false;
+        }
+
+        const coords = mcToMapCoords(mcX, mcZ);
+        if (!coords) {
+          return false;
+        }
+
+        const requestedZoom = Number(options?.zoom);
+        const zoom = Number.isFinite(requestedZoom) ? requestedZoom : Math.min(map.getMaxZoom?.() ?? 2, 2);
+        map.setView(coords, zoom, { animate: true });
+        pulseAt(coords);
+        return true;
+      }
+
+      overlayApi.mcToMapCoords = mcToMapCoords;
+      overlayApi.focusMc = focusMc;
 
       function clearOverlay(key) {
         overlayContent[key].forEach(layer => {
@@ -591,4 +659,446 @@
       });
 
       loadFromStorage();
+    })();
+
+    (function () {
+      const overlayApi = window.DynmapOverlayLayers;
+      const map = overlayApi?.map;
+      if (!overlayApi || !map) {
+        return;
+      }
+
+      const { overlayLayers } = overlayApi;
+      const crs = map.options?.crs || L.CRS.Simple;
+      const fullImageBounds = overlayApi.imageBounds || L.latLngBounds([[0, 0], [overlayApi?.imageSize?.height ?? 0, overlayApi?.imageSize?.width ?? 0]]);
+      const MAX_EXPORT_DIMENSION = 8192;
+
+      const overlayActivationOrder = [];
+
+      function resolveOverlayKey(layer) {
+        if (!overlayLayers || !layer) {
+          return null;
+        }
+        for (const [key, group] of Object.entries(overlayLayers)) {
+          if (group === layer) {
+            return key;
+          }
+        }
+        return null;
+      }
+
+      function removeFromOrder(key) {
+        const index = overlayActivationOrder.indexOf(key);
+        if (index >= 0) {
+          overlayActivationOrder.splice(index, 1);
+        }
+      }
+
+      map.on('overlayadd', event => {
+        const key = resolveOverlayKey(event?.layer);
+        if (!key) {
+          return;
+        }
+        removeFromOrder(key);
+        overlayActivationOrder.push(key);
+      });
+
+      map.on('overlayremove', event => {
+        const key = resolveOverlayKey(event?.layer);
+        if (!key) {
+          return;
+        }
+        removeFromOrder(key);
+      });
+
+      function getActiveOverlayKeysInOrder() {
+        if (!overlayLayers) {
+          return [];
+        }
+
+        const activeKeys = Object.entries(overlayLayers)
+          .filter(([, group]) => map.hasLayer(group))
+          .map(([key]) => key);
+
+        if (!activeKeys.length) {
+          return [];
+        }
+
+        const ordered = overlayActivationOrder.filter(key => activeKeys.includes(key));
+        activeKeys.forEach(key => {
+          if (!ordered.includes(key)) {
+            ordered.push(key);
+          }
+        });
+
+        return ordered;
+      }
+
+      function extendBoundsFromLayer(bounds, layer) {
+        if (!layer) {
+          return;
+        }
+
+        if (typeof layer.eachLayer === 'function' && !(layer instanceof L.Path) && !(layer instanceof L.Marker)) {
+          layer.eachLayer(child => extendBoundsFromLayer(bounds, child));
+          return;
+        }
+
+        if (typeof layer.getBounds === 'function') {
+          try {
+            const layerBounds = layer.getBounds();
+            if (layerBounds && typeof layerBounds.isValid === 'function' && layerBounds.isValid()) {
+              bounds.extend(layerBounds);
+              return;
+            }
+          } catch (error) {
+            // ignore bounds extraction errors
+          }
+        }
+
+        if (typeof layer.getLatLng === 'function') {
+          try {
+            bounds.extend(layer.getLatLng());
+          } catch (error) {
+            // ignore
+          }
+        }
+      }
+
+      function getActiveOverlayBounds(keys) {
+        const bounds = L.latLngBounds([]);
+
+        keys.forEach(key => {
+          const group = overlayLayers?.[key];
+          if (!group || typeof group.eachLayer !== 'function') {
+            return;
+          }
+          group.eachLayer(layer => extendBoundsFromLayer(bounds, layer));
+        });
+
+        return bounds.isValid() ? bounds : null;
+      }
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function normalizePointBounds(bounds, zoom) {
+        const nw = crs.latLngToPoint(bounds.getNorthWest(), zoom);
+        const se = crs.latLngToPoint(bounds.getSouthEast(), zoom);
+
+        const minX = Math.min(nw.x, se.x);
+        const maxX = Math.max(nw.x, se.x);
+        const minY = Math.min(nw.y, se.y);
+        const maxY = Math.max(nw.y, se.y);
+
+        return {
+          min: L.point(minX, minY),
+          max: L.point(maxX, maxY)
+        };
+      }
+
+      function intersectPointBounds(a, b) {
+        const minX = Math.max(a.min.x, b.min.x);
+        const minY = Math.max(a.min.y, b.min.y);
+        const maxX = Math.min(a.max.x, b.max.x);
+        const maxY = Math.min(a.max.y, b.max.y);
+
+        if (maxX <= minX || maxY <= minY) {
+          return null;
+        }
+
+        return {
+          min: L.point(minX, minY),
+          max: L.point(maxX, maxY)
+        };
+      }
+
+      function pointBoundsToLatLngBounds(pointBounds, zoom) {
+        const a = crs.pointToLatLng(pointBounds.min, zoom);
+        const b = crs.pointToLatLng(pointBounds.max, zoom);
+        return L.latLngBounds(a, b);
+      }
+
+      function computeExportBounds(options = {}) {
+        const zoom = 0;
+        const fullPointBounds = normalizePointBounds(fullImageBounds, zoom);
+
+        if (options?.topLeft) {
+          const topLeft = Array.isArray(options.topLeft) ? L.latLng(options.topLeft[0], options.topLeft[1]) : L.latLng(options.topLeft);
+          const topLeftPointRaw = crs.latLngToPoint(topLeft, zoom);
+          const topLeftPoint = L.point(
+            clamp(topLeftPointRaw.x, fullPointBounds.min.x, fullPointBounds.max.x),
+            clamp(topLeftPointRaw.y, fullPointBounds.min.y, fullPointBounds.max.y)
+          );
+
+          const maxWidth = Number(options?.maxWidth);
+          const maxHeight = Number(options?.maxHeight);
+          const remainingWidth = fullPointBounds.max.x - topLeftPoint.x;
+          const remainingHeight = fullPointBounds.max.y - topLeftPoint.y;
+
+          const width = Number.isFinite(maxWidth) && maxWidth > 0 ? Math.min(maxWidth, remainingWidth) : remainingWidth;
+          const height = Number.isFinite(maxHeight) && maxHeight > 0 ? Math.min(maxHeight, remainingHeight) : remainingHeight;
+
+          const bottomRightPoint = L.point(topLeftPoint.x + width, topLeftPoint.y + height);
+          return pointBoundsToLatLngBounds({ min: topLeftPoint, max: bottomRightPoint }, zoom);
+        }
+
+        const activeKeys = getActiveOverlayKeysInOrder();
+        const overlayBounds = getActiveOverlayBounds(activeKeys);
+        if (!overlayBounds) {
+          return null;
+        }
+
+        const paddingPx = Number(options?.paddingPx);
+        const padding = Number.isFinite(paddingPx) ? Math.max(0, paddingPx) : 16;
+
+        const overlayPointBounds = normalizePointBounds(overlayBounds, zoom);
+        const paddedPointBounds = {
+          min: L.point(overlayPointBounds.min.x - padding, overlayPointBounds.min.y - padding),
+          max: L.point(overlayPointBounds.max.x + padding, overlayPointBounds.max.y + padding)
+        };
+
+        const clipped = intersectPointBounds(paddedPointBounds, fullPointBounds);
+        if (!clipped) {
+          return null;
+        }
+
+        return pointBoundsToLatLngBounds(clipped, zoom);
+      }
+
+      function cloneLeafletLayer(layer) {
+        if (!layer) {
+          return null;
+        }
+
+        if (layer instanceof L.LayerGroup || layer instanceof L.FeatureGroup) {
+          const group = L.layerGroup();
+          layer.eachLayer(child => {
+            const clonedChild = cloneLeafletLayer(child);
+            if (clonedChild) {
+              group.addLayer(clonedChild);
+            }
+          });
+          return group;
+        }
+
+        if (layer instanceof L.Marker) {
+          return L.marker(layer.getLatLng(), { ...layer.options, icon: layer.options?.icon });
+        }
+
+        if (layer instanceof L.Circle) {
+          return L.circle(layer.getLatLng(), { ...layer.options, radius: layer.getRadius() });
+        }
+
+        if (layer instanceof L.CircleMarker) {
+          return L.circleMarker(layer.getLatLng(), { ...layer.options });
+        }
+
+        if (layer instanceof L.Polygon) {
+          return L.polygon(layer.getLatLngs(), { ...layer.options });
+        }
+
+        if (layer instanceof L.Polyline) {
+          return L.polyline(layer.getLatLngs(), { ...layer.options });
+        }
+
+        if (typeof layer.toGeoJSON === 'function') {
+          try {
+            return L.geoJSON(layer.toGeoJSON(), {
+              style: () => ({ ...layer.options }),
+              pointToLayer: (feature, latlng) => L.circleMarker(latlng, { ...layer.options })
+            });
+          } catch (error) {
+            return null;
+          }
+        }
+
+        return null;
+      }
+
+      function mirrorPanes(sourceMap, targetMap) {
+        if (!sourceMap || !targetMap || typeof sourceMap.getPanes !== 'function') {
+          return;
+        }
+
+        const panes = sourceMap.getPanes();
+        Object.entries(panes).forEach(([name, element]) => {
+          if (!name || !element || targetMap.getPane(name)) {
+            return;
+          }
+
+          try {
+            const pane = targetMap.createPane(name);
+            if (element.style?.zIndex) {
+              pane.style.zIndex = element.style.zIndex;
+            }
+          } catch (error) {
+            // ignore panes that cannot be created
+          }
+        });
+      }
+
+      async function waitForNextFrame() {
+        await new Promise(resolve => requestAnimationFrame(() => resolve()));
+      }
+
+      async function exportOverlayImage(options = {}) {
+        if (typeof html2canvas !== 'function') {
+          if (typeof displayStorageStatus === 'function') {
+            displayStorageStatus('error', '导出失败：缺少 html2canvas');
+          }
+          return;
+        }
+
+        const activeKeys = getActiveOverlayKeysInOrder();
+        if (!activeKeys.length) {
+          if (typeof displayStorageStatus === 'function') {
+            displayStorageStatus('warning', '没有启用任何覆盖层，无法导出');
+          }
+          return;
+        }
+
+        const exportBounds = computeExportBounds(options);
+        if (!exportBounds) {
+          if (typeof displayStorageStatus === 'function') {
+            displayStorageStatus('warning', '未能计算导出范围（覆盖层可能为空）');
+          }
+          return;
+        }
+
+        const zoom = 0;
+        const fullPointBounds = normalizePointBounds(fullImageBounds, zoom);
+        const exportPointBounds = normalizePointBounds(exportBounds, zoom);
+        const clipped = intersectPointBounds(exportPointBounds, fullPointBounds);
+        if (!clipped) {
+          if (typeof displayStorageStatus === 'function') {
+            displayStorageStatus('warning', '导出范围超出地图边界');
+          }
+          return;
+        }
+
+        const width = Math.ceil(clipped.max.x - clipped.min.x);
+        const height = Math.ceil(clipped.max.y - clipped.min.y);
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+          if (typeof displayStorageStatus === 'function') {
+            displayStorageStatus('error', '导出失败：无效的图片尺寸');
+          }
+          return;
+        }
+
+        const maxSize = Math.max(width, height);
+        const minZoom = Number.isFinite(map.getMinZoom?.()) ? map.getMinZoom() : -5;
+        let exportZoom = 0;
+        if (maxSize > MAX_EXPORT_DIMENSION) {
+          exportZoom = Math.floor(Math.log2(MAX_EXPORT_DIMENSION / maxSize));
+          exportZoom = Math.max(minZoom, exportZoom);
+        }
+
+        const exportBoundsAtZoom = normalizePointBounds(normalizedBounds, exportZoom);
+        const exportWidth = Math.ceil(exportBoundsAtZoom.max.x - exportBoundsAtZoom.min.x);
+        const exportHeight = Math.ceil(exportBoundsAtZoom.max.y - exportBoundsAtZoom.min.y);
+
+        const container = document.createElement('div');
+        container.style.position = 'fixed';
+        container.style.left = '-100000px';
+        container.style.top = '-100000px';
+        container.style.width = `${exportWidth}px`;
+        container.style.height = `${exportHeight}px`;
+        container.style.background = 'transparent';
+        container.style.pointerEvents = 'none';
+        container.setAttribute('aria-hidden', 'true');
+        document.body.appendChild(container);
+
+        const exportMap = L.map(container, {
+          crs,
+          zoomControl: false,
+          attributionControl: false,
+          preferCanvas: true,
+          zoomAnimation: false,
+          fadeAnimation: false,
+          markerZoomAnimation: false,
+          minZoom: exportZoom,
+          maxZoom: exportZoom,
+          zoomSnap: 0
+        });
+
+        mirrorPanes(map, exportMap);
+
+        const normalizedBounds = pointBoundsToLatLngBounds(clipped, zoom);
+        exportMap.fitBounds(normalizedBounds, { animate: false, padding: [0, 0], maxZoom: exportZoom });
+
+        const layerOrder = activeKeys;
+        layerOrder.forEach(key => {
+          const group = overlayLayers?.[key];
+          if (!group) {
+            return;
+          }
+
+          const groupLayers = [];
+          if (typeof group.eachLayer === 'function') {
+            group.eachLayer(layer => groupLayers.push(layer));
+          }
+
+          groupLayers.forEach(layer => {
+            const clonedLayer = cloneLeafletLayer(layer);
+            if (!clonedLayer) {
+              return;
+            }
+
+            if (typeof layer.getTooltip === 'function' && typeof clonedLayer.bindTooltip === 'function') {
+              const tooltip = layer.getTooltip();
+              if (tooltip) {
+                clonedLayer.bindTooltip(tooltip.getContent(), { ...tooltip.options });
+                if (tooltip.options?.permanent && typeof clonedLayer.openTooltip === 'function') {
+                  clonedLayer.openTooltip();
+                }
+              }
+            }
+
+            clonedLayer.addTo(exportMap);
+          });
+        });
+
+        await waitForNextFrame();
+        await waitForNextFrame();
+
+        const canvas = await html2canvas(container, {
+          backgroundColor: null,
+          scale: 1,
+          useCORS: true
+        });
+
+        exportMap.remove();
+        container.remove();
+
+        const date = new Date();
+        const datePart = date.toISOString().split('T')[0];
+        const modeSuffix = options?.topLeft ? 'clip' : 'full';
+        const filename = `dynmap-overlays-${modeSuffix}-${datePart}.png`;
+
+        await new Promise((resolve, reject) => {
+          canvas.toBlob(blob => {
+            if (!blob) {
+              reject(new Error('Unable to generate PNG blob'));
+              return;
+            }
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            resolve();
+          }, 'image/png');
+        });
+
+        if (typeof displayStorageStatus === 'function') {
+          displayStorageStatus('success', `覆盖层图片已导出：${filename}`);
+        }
+      }
+
+      window.exportOverlayImage = exportOverlayImage;
     })();
