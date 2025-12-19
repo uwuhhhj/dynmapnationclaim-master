@@ -4,6 +4,7 @@
  */
 
 const DATA_SOURCE_URL = 'https://map.simmc.cc/tiles/_markers_/marker_world.json';
+const LOCAL_DATA_SOURCE_URL = 'data/marker_world.json';
 const LAND_SET_NAMESPACE = 'me.angeschossen.lands';
 
 const STORAGE_KEYS = Object.freeze({
@@ -183,14 +184,32 @@ async function removeStoredItem(key) {
  */
 
 async function fetchRemoteData() {
-  logger.info('Fetching remote marker data from', DATA_SOURCE_URL);
+  async function fetchJson(url, sourceLabel) {
+    logger.info(`Fetching ${sourceLabel} marker data from`, url);
 
-  const response = await fetch(DATA_SOURCE_URL);
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    return response.json();
   }
 
-  return response.json();
+  try {
+    return await fetchJson(DATA_SOURCE_URL, 'remote');
+  } catch (remoteError) {
+    logger.warn('Remote marker fetch failed, trying local fallback.', remoteError);
+    try {
+      return await fetchJson(LOCAL_DATA_SOURCE_URL, 'local');
+    } catch (localError) {
+      const combinedError = new Error(
+        `Remote fetch failed (${remoteError?.message ?? remoteError}); local fallback failed (${localError?.message ?? localError})`
+      );
+      combinedError.remoteError = remoteError;
+      combinedError.localError = localError;
+      throw combinedError;
+    }
+  }
 }
 
 function extractLandData(rawData) {
