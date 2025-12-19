@@ -14,7 +14,8 @@ const STORAGE_KEYS = Object.freeze({
   countryCapitals: 'countryCapitals',
   countryClaims: 'countryClaims',
   claimsConfig: 'claimsConfig',
-  conflictResolvedBoundaries: 'conflictResolvedBoundaries'
+  conflictResolvedBoundaries: 'conflictResolvedBoundaries',
+  capitalColorModes: 'capitalColorModes'
 });
 
 let currentDataView = 'markers'; // 'markers' | 'areas' | 'countrySpawn' | 'countryAreas'
@@ -235,13 +236,15 @@ async function fetchAndStoreAllData(options = {}) {
 
     await persistFetchedData(markers, areas);
     const countryData = await processCountryData(markers, areas);
+    const storedCapitalColorModes = await getStoredCapitalColorModes();
 
     emitDataUpdated({
       markers,
       areas,
       countrySpawn: countryData?.countrySpawn ?? {},
       countryAreas: countryData?.countryAreas ?? {},
-      countryCapitals: countryData?.countryCapitals ?? {}
+      countryCapitals: countryData?.countryCapitals ?? {},
+      capitalColorModes: storedCapitalColorModes ?? {}
     });
 
     if (showStatus) {
@@ -399,6 +402,14 @@ async function getStoredCountryAreas() {
 
 async function getStoredCountryCapitals() {
   return getStoredJson(STORAGE_KEYS.countryCapitals);
+}
+
+async function getStoredCapitalColorModes() {
+  return getStoredJson(STORAGE_KEYS.capitalColorModes);
+}
+
+async function setStoredCapitalColorModes(colorModes) {
+  await setStoredJson(STORAGE_KEYS.capitalColorModes, colorModes);
 }
 
 async function setStoredCountryClaims(countryClaimsData) {
@@ -874,12 +885,13 @@ async function toggleDataView() {
 async function viewStoredData() {
   await updateDataDisplay();
 
-  const [markers, areas, countrySpawn, countryAreas, countryCapitals, countryClaims] = await Promise.all([
+  const [markers, areas, countrySpawn, countryAreas, countryCapitals, capitalColorModes, countryClaims] = await Promise.all([
     getStoredMarkers(),
     getStoredAreas(),
     getStoredCountrySpawn(),
     getStoredCountryAreas(),
     getStoredCountryCapitals(),
+    getStoredCapitalColorModes(),
     getStoredCountryClaims()
   ]);
 
@@ -888,11 +900,12 @@ async function viewStoredData() {
   const countrySpawnCount = countrySpawn ? Object.keys(countrySpawn).length : 0;
   const countryAreasCount = countryAreas ? Object.keys(countryAreas).length : 0;
   const countryCapitalsCount = countryCapitals ? Object.keys(countryCapitals).length : 0;
+  const capitalColorCount = capitalColorModes ? Object.keys(capitalColorModes).length : 0;
   const countryClaimsCount = countryClaims ? Object.keys(countryClaims).length : 0;
 
   displayStorageStatus(
     'success',
-    `显示了 ${markersCount} 个标记、${areasCount} 个区域、${countrySpawnCount} 个国家标记、${countryAreasCount} 个国家区域、${countryCapitalsCount} 个国家首都、${countryClaimsCount} 个国家宣称`
+    `显示了 ${markersCount} 个标记、${areasCount} 个区域、${countrySpawnCount} 个国家标记、${countryAreasCount} 个国家区域、${countryCapitalsCount} 个国家首都、${capitalColorCount} 个首都配色、${countryClaimsCount} 个国家宣称`
   );
 }
 
@@ -919,6 +932,7 @@ async function clearStoredData() {
       removeStoredItem(STORAGE_KEYS.countrySpawn),
       removeStoredItem(STORAGE_KEYS.countryAreas),
       removeStoredItem(STORAGE_KEYS.countryCapitals),
+      removeStoredItem(STORAGE_KEYS.capitalColorModes),
       removeStoredItem(STORAGE_KEYS.countryClaims),
       removeStoredItem(STORAGE_KEYS.conflictResolvedBoundaries)
     ]);
@@ -947,12 +961,13 @@ async function initializeDataManager() {
   logger.info('Initializing data manager…');
   displayStorageStatus('info', '正在初始化数据…');
 
-  const [cachedMarkers, cachedAreas, cachedSpawn, cachedCountryAreas, cachedCapitals, cachedClaims] = await Promise.all([
+  const [cachedMarkers, cachedAreas, cachedSpawn, cachedCountryAreas, cachedCapitals, cachedCapitalColors, cachedClaims] = await Promise.all([
     getStoredMarkers(),
     getStoredAreas(),
     getStoredCountrySpawn(),
     getStoredCountryAreas(),
     getStoredCountryCapitals(),
+    getStoredCapitalColorModes(),
     getStoredCountryClaims()
   ]);
 
@@ -962,6 +977,7 @@ async function initializeDataManager() {
     spawn: cachedSpawn ? Object.keys(cachedSpawn).length : 0,
     countryAreas: cachedCountryAreas ? Object.keys(cachedCountryAreas).length : 0,
     capitals: cachedCapitals ? Object.keys(cachedCapitals).length : 0,
+    capitalColors: cachedCapitalColors ? Object.keys(cachedCapitalColors).length : 0,
     claims: cachedClaims ? Object.keys(cachedClaims).length : 0
   };
 
@@ -974,12 +990,13 @@ async function initializeDataManager() {
       areas: cachedAreas ?? {},
       countrySpawn: cachedSpawn ?? {},
       countryAreas: cachedCountryAreas ?? {},
-      countryCapitals: cachedCapitals ?? {}
+      countryCapitals: cachedCapitals ?? {},
+      capitalColorModes: cachedCapitalColors ?? {}
     });
     await updateDataDisplay();
     displayStorageStatus(
       'info',
-      `使用本地缓存：标记 ${cachedCounts.markers}、区域 ${cachedCounts.areas}、国家标记 ${cachedCounts.spawn}、国家区域 ${cachedCounts.countryAreas}、国家首都 ${cachedCounts.capitals}`
+      `使用本地缓存：标记 ${cachedCounts.markers}、区域 ${cachedCounts.areas}、国家标记 ${cachedCounts.spawn}、国家区域 ${cachedCounts.countryAreas}、国家首都 ${cachedCounts.capitals}、首都配色 ${cachedCounts.capitalColors}`
     );
   }
 
@@ -1004,12 +1021,13 @@ async function exportData() {
   try {
     logger.info('Exporting stored data…');
 
-    const [markers, areas, countrySpawn, countryAreas, countryCapitals, countryClaims] = await Promise.all([
+    const [markers, areas, countrySpawn, countryAreas, countryCapitals, capitalColorModes, countryClaims] = await Promise.all([
       getStoredMarkers(),
       getStoredAreas(),
       getStoredCountrySpawn(),
       getStoredCountryAreas(),
       getStoredCountryCapitals(),
+      getStoredCapitalColorModes(),
       getStoredCountryClaims()
     ]);
 
@@ -1022,6 +1040,7 @@ async function exportData() {
         countrySpawn,
         countryAreas,
         countryCapitals,
+        capitalColorModes,
         countryClaims
       },
       metadata: {
@@ -1060,12 +1079,13 @@ async function showDatabaseStats() {
     const stats = await IndexedDBStorage.getStats();
     const allKeys = await IndexedDBStorage.getAllKeys();
 
-    const [markers, areas, countrySpawn, countryAreas, countryCapitals, countryClaims] = await Promise.all([
+    const [markers, areas, countrySpawn, countryAreas, countryCapitals, capitalColorModes, countryClaims] = await Promise.all([
       getStoredMarkers(),
       getStoredAreas(),
       getStoredCountrySpawn(),
       getStoredCountryAreas(),
       getStoredCountryCapitals(),
+      getStoredCapitalColorModes(),
       getStoredCountryClaims()
     ]);
 
@@ -1075,6 +1095,7 @@ async function showDatabaseStats() {
       countrySpawn: countrySpawn ? Object.keys(countrySpawn).length : 0,
       countryAreas: countryAreas ? Object.keys(countryAreas).length : 0,
       countryCapitals: countryCapitals ? Object.keys(countryCapitals).length : 0,
+      capitalColorModes: capitalColorModes ? Object.keys(capitalColorModes).length : 0,
       countryClaims: countryClaims ? Object.keys(countryClaims).length : 0
     };
 

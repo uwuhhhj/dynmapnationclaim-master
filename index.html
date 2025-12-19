@@ -168,6 +168,69 @@
       padding: 0.25rem 0.5rem;
     }
 
+    .leaflet-tooltip.capital-label {
+      background: rgba(15, 23, 42, 0.78);
+      border-radius: 999px;
+      padding: 4px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      text-align: center;
+      pointer-events: none;
+      border: 1px solid transparent;
+      box-shadow: 0 6px 12px rgba(15, 23, 42, 0.35);
+    }
+
+    .leaflet-tooltip.capital-label.capital-label--red {
+      color: #fecaca;
+      border-color: rgba(248, 113, 113, 0.45);
+    }
+
+    .leaflet-tooltip.capital-label.capital-label--green {
+      color: #bbf7d0;
+      border-color: rgba(74, 222, 128, 0.45);
+    }
+
+    .capital-desc {
+      margin-bottom: 8px;
+      color: #e2e8f0;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .capital-popup-controls {
+      display: flex;
+      gap: 8px;
+    }
+
+    .capital-color-toggle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 6px 12px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      color: #0f172a;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .capital-color-toggle[data-next-mode="green"] {
+      background: #4ade80;
+      color: #064e3b;
+    }
+
+    .capital-color-toggle[data-next-mode="red"] {
+      background: #f87171;
+      color: #7f1d1d;
+    }
+
+    .capital-color-toggle:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 12px rgba(15, 23, 42, 0.25);
+    }
+
     @media (max-width: 1024px) {
       .app-shell {
         flex-direction: column;
@@ -236,7 +299,7 @@
       center: [imageHeight / 2, imageWidth / 2],
       zoom: -1,
       minZoom: -3,
-      maxZoom: 2
+      maxZoom: 5
     });
 
     const baseLayer = L.imageOverlay('tiles/map_low.png', imageBounds);
@@ -250,8 +313,8 @@
       countryAreas: L.layerGroup(),
       countryCapitals: L.layerGroup()
     };
-
-    Object.values(overlayLayers).forEach(layer => layer.addTo(map));
+    //默认不加载图层
+    //Object.values(overlayLayers).forEach(layer => layer.addTo(map));
 
     const baseLayers = {
       'Dynmap 底图': baseLayer
@@ -310,6 +373,66 @@
         countryAreas: [],
         countryCapitals: []
       };
+
+      const CAPITAL_COLOR_SCHEMES = {
+        red: { stroke: '#dc2626', fill: '#ef4444', labelClass: 'capital-label--red' },
+        green: { stroke: '#15803d', fill: '#22c55e', labelClass: 'capital-label--green' }
+      };
+      const CAPITAL_COLOR_STORAGE_KEY = 'capitalColorModes';
+      const capitalColorOverrides = Object.create(null);
+      let lastCountryCapitalData = {};
+
+      function syncCapitalColorOverrides(modes) {
+        const source = modes && typeof modes === 'object' ? modes : {};
+
+        Object.keys(capitalColorOverrides).forEach(country => {
+          if (!Object.prototype.hasOwnProperty.call(source, country)) {
+            delete capitalColorOverrides[country];
+          }
+        });
+
+        Object.entries(source).forEach(([country, mode]) => {
+          if (typeof mode === 'string' && CAPITAL_COLOR_SCHEMES[mode]) {
+            capitalColorOverrides[country] = mode;
+          }
+        });
+      }
+
+      function persistCapitalColorModes() {
+        if (!window.IndexedDBStorage || typeof window.IndexedDBStorage.setItem !== 'function') {
+          return Promise.resolve();
+        }
+
+        const serializable = Object.fromEntries(Object.entries(capitalColorOverrides));
+        return window.IndexedDBStorage.setItem(CAPITAL_COLOR_STORAGE_KEY, serializable);
+      }
+
+      function getCapitalColorMode(countryName) {
+        if (!countryName) {
+          return 'red';
+        }
+        const override = capitalColorOverrides[countryName];
+        return override && CAPITAL_COLOR_SCHEMES[override] ? override : 'red';
+      }
+
+      function toggleCapitalColorMode(countryName) {
+        if (!countryName) {
+          return;
+        }
+        const currentMode = getCapitalColorMode(countryName);
+        const nextMode = currentMode === 'green' ? 'red' : 'green';
+        if (nextMode === 'red') {
+          delete capitalColorOverrides[countryName];
+        } else {
+          capitalColorOverrides[countryName] = nextMode;
+        }
+        if (lastCountryCapitalData && typeof lastCountryCapitalData === 'object') {
+          updateCountryCapitals(lastCountryCapitalData);
+        }
+        persistCapitalColorModes().catch(error => {
+          console.warn('[OverlayManager] Failed to persist capital color overrides', error);
+        });
+      }
 
       function mcToMapCoords(mcX, mcZ) {
         if (typeof mcX !== 'number' || typeof mcZ !== 'number') {
@@ -477,6 +600,8 @@
       function updateCountryCapitals(countryCapitals) {
         clearOverlay('countryCapitals');
 
+        lastCountryCapitalData = countryCapitals && typeof countryCapitals === 'object' ? countryCapitals : {};
+
         if (!countryCapitals || typeof countryCapitals !== 'object') {
           return;
         }
@@ -484,6 +609,10 @@
         Object.entries(countryCapitals).forEach(([countryName, capitalInfo]) => {
           const capitalAreas = capitalInfo?.areas || {};
           const capitalName = capitalInfo?.name || countryName;
+          const colorMode = getCapitalColorMode(countryName);
+          const colorScheme = CAPITAL_COLOR_SCHEMES[colorMode] || CAPITAL_COLOR_SCHEMES.red;
+          const nextMode = colorMode === 'green' ? 'red' : 'green';
+          const toggleLabel = colorMode === 'green' ? '切换回红色' : '切换为绿色';
 
           Object.entries(capitalAreas).forEach(([areaId, area]) => {
             if (!Array.isArray(area?.x) || !Array.isArray(area?.z) || area.x.length !== area.z.length || !area.x.length) {
@@ -496,14 +625,43 @@
             }
 
             const polygon = L.polygon(latLngs, {
-              color: '#dc2626',
+              color: colorScheme.stroke,
               weight: area?.weight ?? 3,
-              fillColor: '#ef4444',
+              fillColor: colorScheme.fill,
               fillOpacity: 0.35
             });
 
             const heading = capitalName ? `${countryName} · ${capitalName}` : countryName;
-            bindPopup(polygon, heading, area?.desc);
+
+            const detailsParts = [];
+            if (area?.desc) {
+              detailsParts.push(`<div class="capital-desc">${area.desc}</div>`);
+            }
+            detailsParts.push(`<div class="capital-popup-controls"><button type="button" class="capital-color-toggle" data-next-mode="${nextMode}">${toggleLabel}</button></div>`);
+
+            bindPopup(polygon, heading, detailsParts.join(''));
+            polygon.bindTooltip(countryName, {
+              permanent: true,
+              direction: 'center',
+              className: `capital-label ${colorScheme.labelClass}`,
+              opacity: 1
+            });
+            polygon.on('popupopen', event => {
+              const popupElement = event.popup.getElement();
+              if (!popupElement) {
+                return;
+              }
+              const toggleButton = popupElement.querySelector('.capital-color-toggle');
+              if (!toggleButton) {
+                return;
+              }
+              toggleButton.addEventListener('click', clickEvent => {
+                clickEvent.preventDefault();
+                clickEvent.stopPropagation();
+                toggleCapitalColorMode(countryName);
+              }, { once: true });
+            });
+
             overlayLayers.countryCapitals.addLayer(polygon);
             overlayContent.countryCapitals.push(polygon);
           });
@@ -511,6 +669,9 @@
       }
 
       function applyData(detail = {}) {
+        if (Object.prototype.hasOwnProperty.call(detail, 'capitalColorModes')) {
+          syncCapitalColorOverrides(detail.capitalColorModes);
+        }
         updateTerritoryMarkers(detail.markers || {});
         updateTerritoryAreas(detail.areas || {});
         updateCountrySpawns(detail.countrySpawn || {});
@@ -524,7 +685,7 @@
           return;
         }
 
-        const storageKeys = ['landMarkers', 'landAreas', 'countrySpawn', 'countryAreas', 'countryCapitals'];
+        const storageKeys = ['landMarkers', 'landAreas', 'countrySpawn', 'countryAreas', 'countryCapitals', 'capitalColorModes'];
         const results = await Promise.all(storageKeys.map(key => window.IndexedDBStorage.getItem(key)));
         const parsed = {};
         storageKeys.forEach((key, index) => {
@@ -546,7 +707,8 @@
           areas: parsed.landAreas,
           countrySpawn: parsed.countrySpawn,
           countryAreas: parsed.countryAreas,
-          countryCapitals: parsed.countryCapitals
+          countryCapitals: parsed.countryCapitals,
+          capitalColorModes: parsed.capitalColorModes || {}
         });
       }
 
