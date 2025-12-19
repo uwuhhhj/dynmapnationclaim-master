@@ -18,7 +18,7 @@
     const storage = window.DynmapStorage;
     const parsers = window.DynmapDescParsers;
     if (!storage) {
-      throw new Error('Missing DynmapStorage. Ensure js/data/data-storage.js is loaded.');
+      throw new Error('Missing DynmapStorage. Ensure js/data/indexeddb-manager.js is loaded.');
     }
     if (!parsers) {
       throw new Error('Missing DynmapDescParsers. Ensure js/data/desc-parsers.js is loaded.');
@@ -382,4 +382,3 @@
     focusMapAtMc
   });
 })();
-

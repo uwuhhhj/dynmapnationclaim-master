@@ -12,7 +12,7 @@
     const fetcher = window.DynmapDataFetch;
     const datasets = window.DynmapOverlayDatasets;
     if (!storage) {
-      throw new Error('Missing DynmapStorage. Ensure js/data/data-storage.js is loaded.');
+      throw new Error('Missing DynmapStorage. Ensure js/data/indexeddb-manager.js is loaded.');
     }
     if (!fetcher?.fetchAndStoreAllData) {
       throw new Error('Missing DynmapDataFetch. Ensure js/data/data-fetch.js is loaded.');
@@ -405,4 +405,3 @@
     updateDataDisplay
   });
 })();
-

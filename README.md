@@ -6,7 +6,7 @@
 
 - **自定义底图 + 坐标映射**：使用 Leaflet 的 `L.CRS.Simple` 把 Minecraft 坐标映射到一张静态底图（`tiles/map_low.png`）。
 - **数据获取（远程 + 本地回退）**：默认从 `js/data/data-fetch.js` 中的远程 Dynmap URL 拉取 marker 数据；失败时回退到 `data/marker_world.json`。
-- **本地缓存（IndexedDB）**：通过 Dexie 封装的 `window.IndexedDBStorage` 做键值存储；数据刷新后写入 IndexedDB，刷新页面也能直接加载。
+- **本地缓存（IndexedDB）**：`js/data/indexeddb-manager.js` 直接提供 Dexie-backed 的 `window.IndexedDBStorage` 和数据特化的 `window.DynmapStorage`，用统一 key 保存标记/区域/国家数据。
 - **国家数据派生**：解析标记/区域描述中的国家与首都信息，生成并缓存：
   - 国家出生点（点）
   - 国家区域（面）
@@ -39,9 +39,9 @@
 │  ├─ app.js                     Leaflet 地图初始化、底图加载、覆盖层容器注册
 │  ├─ libs/                      三方库（Leaflet / html2canvas / Dexie）
 │  ├─ data/                      数据获取、解析、缓存与面板逻辑
+│  │  ├─ data-domain.js           领地/国家的领域模型帮助类（新）
 │  │  ├─ data-fetch.js            拉取 marker_world.json（远程 + 本地回退）、写入缓存、触发更新事件
-│  │  ├─ data-storage.js          统一的存储 API（封装 IndexedDBStorage 的 key）
-│  │  ├─ indexeddb-manager.js     Dexie 实现的 IndexedDBStorage 兼容层
+│  │  ├─ indexeddb-manager.js     直接暴露 Dexie-backed `DynmapStorage` + 工具函数
 │  │  ├─ desc-parsers.js          从 desc/markup/label 中解析国家、首都、区块数、玩家数等
 │  │  ├─ data-country.js          基于解析结果生成国家维度数据集并写入缓存
 │  │  ├─ data-overlay-datasets.js 覆盖层数据集定义 + 列表项加载（含面积/中心点等统计）
