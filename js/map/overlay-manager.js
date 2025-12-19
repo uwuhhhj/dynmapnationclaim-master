@@ -279,6 +279,82 @@
         }
       }
 
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function getParsers() {
+        const parsers = window.DynmapDescParsers;
+        if (!parsers || typeof parsers !== 'object') {
+          return {
+            stripHtml: (value) => (typeof value === 'string' ? value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() : ''),
+            extractPrimaryNameFromDesc: () => null
+          };
+        }
+        return {
+          stripHtml: typeof parsers.stripHtml === 'function' ? parsers.stripHtml : (value) => String(value ?? ''),
+          extractPrimaryNameFromDesc: typeof parsers.extractPrimaryNameFromDesc === 'function' ? parsers.extractPrimaryNameFromDesc : () => null
+        };
+      }
+
+      function isLikelyInternalIdLabel(labelText, areaId) {
+        const value = String(labelText ?? '').trim();
+        if (!value) {
+          return false;
+        }
+
+        const normalized = value.replace(/\s+/g, '');
+        const normalizedAreaId = String(areaId ?? '').trim().replace(/\s+/g, '');
+        if (normalizedAreaId && normalized.toLowerCase() === normalizedAreaId.toLowerCase()) {
+          return true;
+        }
+
+        // ULID (26 chars Crockford base32), optionally with a suffix like "_world".
+        if (/^[0-9A-HJKMNP-TV-Z]{26}(?:_[A-Za-z0-9-]+)?$/i.test(normalized)) {
+          return true;
+        }
+
+        // UUID (common internal identifier format).
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(normalized)) {
+          return true;
+        }
+
+        return false;
+      }
+
+      function getAreaDisplayName(areaId, area) {
+        if (!area || typeof area !== 'object') {
+          return '';
+        }
+
+        const { stripHtml, extractPrimaryNameFromDesc } = getParsers();
+
+        const primaryName =
+          extractPrimaryNameFromDesc(area?.markup) ||
+          extractPrimaryNameFromDesc(area?.desc) ||
+          extractPrimaryNameFromDesc(area?.label);
+        const cleanedPrimary = stripHtml(primaryName);
+        if (cleanedPrimary && !isLikelyInternalIdLabel(cleanedPrimary, areaId)) {
+          return cleanedPrimary;
+        }
+
+        const cleanedLabel = stripHtml(area?.label);
+        if (cleanedLabel && !isLikelyInternalIdLabel(cleanedLabel, areaId)) {
+          return cleanedLabel;
+        }
+
+        return '';
+      }
+
+      function getAreaPopupHeading(areaId, area) {
+        return getAreaDisplayName(areaId, area);
+      }
+
       function updateTerritoryMarkers(markers) {
         clearOverlay('territoryMarkers');
 
@@ -323,22 +399,11 @@
             weight: area.weight ?? 1,
             opacity: area.opacity ?? 1
           });
-          bindPopup(polygon, areaId, area?.desc);
+          // Don't show internal area IDs by default; prefer the configured label.
+          bindPopup(polygon, getAreaPopupHeading(areaId, area), area?.desc);
           overlayLayers.territoryAreas.addLayer(polygon);
           overlayContent.territoryAreas.push(polygon);
 
-          if (area?.label) {
-            const bounds = polygon.getBounds();
-            const townCenter = bounds.getCenter();
-            const townLayer = L.marker(townCenter, {
-              icon: L.divIcon({
-                className: 'capital-label',
-                html: `<span>${area.label}</span>`
-              })
-            });
-            overlayLayers.territoryAreas.addLayer(townLayer);
-            overlayContent.territoryAreas.push(townLayer);
-          }
         });
       }
 
@@ -417,7 +482,9 @@
               fillOpacity: 0.18,
               weight: 2
             });
-            bindPopup(polygon, `${countryName} - ${areaId}`, area?.desc);
+            const areaName = getAreaDisplayName(areaId, area);
+            const heading = areaName ? `${countryName} - ${areaName}` : countryName;
+            bindPopup(polygon, heading, area?.desc);
             overlayLayers.countryAreas.addLayer(polygon);
             overlayContent.countryAreas.push(polygon);
           });
