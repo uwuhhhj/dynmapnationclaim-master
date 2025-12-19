@@ -142,6 +142,20 @@ function extractChunkCountFromDesc(desc) {
   return parseCompactNumber(match[1]);
 }
 
+function extractCountryTerritoryCountFromDesc(desc) {
+  const clean = stripHtml(desc);
+  if (!clean) {
+    return null;
+  }
+
+  const match = clean.match(/领土\s*[（(]\s*数量[:：]\s*([0-9,，\s]+)\s*[,，]/u);
+  if (!match || !match[1]) {
+    return null;
+  }
+
+  return parseCompactNumber(match[1]);
+}
+
 function extractTerritoryPlayersFromDesc(desc) {
   const clean = stripHtml(desc);
   if (!clean) {
@@ -160,6 +174,14 @@ function extractCountryPlayersTotalFromDesc(desc) {
   const clean = stripHtml(desc);
   if (!clean) {
     return null;
+  }
+
+  const territorySummary = clean.match(/领土\s*[（(]\s*数量[:：]\s*[0-9,，\s]+\s*[,，]\s*玩家数量[:：]\s*([0-9,，\s]+)/u);
+  if (territorySummary && territorySummary[1]) {
+    const parsed = parseCompactNumber(territorySummary[1]);
+    if (parsed !== null) {
+      return parsed;
+    }
   }
 
   const countryTotal = clean.match(/玩家数量[:：]\s*([0-9,，\s]+)/u);
@@ -338,7 +360,9 @@ async function loadOverlayDatasetItems(datasetKey) {
           extractCountryFromDesc(marker?.desc) ||
           extractCountryFromDesc(marker?.label);
         const chunks = extractChunkCountFromDesc(descSource);
-        const playersTotal = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
+        const townPlayers = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
+        const countryPlayers = extractPlayersTotalFromDesc(descSource, { scope: 'country' });
+        const territoryCount = extractCountryTerritoryCountFromDesc(descSource);
 
         const mcX = safeNumber(marker?.x);
         const mcZ = safeNumber(marker?.z);
@@ -353,7 +377,9 @@ async function loadOverlayDatasetItems(datasetKey) {
           size: 0,
           quantity: 1,
           chunks,
-          playersTotal
+          townPlayers,
+          countryPlayers,
+          territoryCount
         };
       });
     }
@@ -382,7 +408,9 @@ async function loadOverlayDatasetItems(datasetKey) {
           extractCountryFromDesc(area?.label);
 
         const chunks = extractChunkCountFromDesc(descSource);
-        const playersTotal = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
+        const townPlayers = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
+        const countryPlayers = extractPlayersTotalFromDesc(descSource, { scope: 'country' });
+        const territoryCount = extractCountryTerritoryCountFromDesc(descSource);
 
         return [
           {
@@ -395,7 +423,9 @@ async function loadOverlayDatasetItems(datasetKey) {
             size: stats.area,
             quantity: stats.vertexCount,
             chunks,
-            playersTotal
+            townPlayers,
+            countryPlayers,
+            territoryCount
           }
         ];
       });
@@ -413,7 +443,9 @@ async function loadOverlayDatasetItems(datasetKey) {
           const markerData = spawn?.markerData;
           const descSource = typeof markerData?.desc === 'string' ? markerData.desc : (typeof markerData?.markup === 'string' ? markerData.markup : '');
           const chunks = extractChunkCountFromDesc(descSource);
-          const playersTotal = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
+          const townPlayers = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
+          const countryPlayers = extractPlayersTotalFromDesc(descSource, { scope: 'country' });
+          const territoryCount = extractCountryTerritoryCountFromDesc(descSource);
           const mcX = safeNumber(spawn?.x);
           const mcZ = safeNumber(spawn?.z);
           items.push({
@@ -426,7 +458,9 @@ async function loadOverlayDatasetItems(datasetKey) {
             size: 0,
             quantity: 1,
             chunks,
-            playersTotal
+            townPlayers,
+            countryPlayers,
+            territoryCount
           });
         });
       }
@@ -457,7 +491,9 @@ async function loadOverlayDatasetItems(datasetKey) {
             `区域 ${areaId.split('_')[0] || areaId}`;
 
           const chunks = extractChunkCountFromDesc(descSource);
-          const playersTotal = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
+          const townPlayers = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
+          const countryPlayers = extractPlayersTotalFromDesc(descSource, { scope: 'country' });
+          const territoryCount = extractCountryTerritoryCountFromDesc(descSource);
 
           items.push({
             kind: 'polygon',
@@ -469,7 +505,9 @@ async function loadOverlayDatasetItems(datasetKey) {
             size: stats.area,
             quantity: stats.vertexCount,
             chunks,
-            playersTotal
+            townPlayers,
+            countryPlayers,
+            territoryCount
           });
         }
       }
@@ -495,7 +533,9 @@ async function loadOverlayDatasetItems(datasetKey) {
           }
           const descSource = typeof area?.desc === 'string' ? area.desc : (typeof area?.markup === 'string' ? area.markup : '');
           const chunks = extractChunkCountFromDesc(descSource);
-          const playersTotal = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
+          const townPlayers = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
+          const countryPlayers = extractPlayersTotalFromDesc(descSource, { scope: 'country' });
+          const territoryCount = extractCountryTerritoryCountFromDesc(descSource);
           items.push({
             kind: 'polygon',
             id: areaId,
@@ -506,7 +546,9 @@ async function loadOverlayDatasetItems(datasetKey) {
             size: stats.area,
             quantity: stats.vertexCount,
             chunks,
-            playersTotal
+            townPlayers,
+            countryPlayers,
+            territoryCount
           });
         }
       }
@@ -527,7 +569,9 @@ async function loadOverlayDatasetItems(datasetKey) {
           const markerData = markers && typeof markers === 'object' ? markers[markerId] : null;
           const descSource = typeof markerData?.desc === 'string' ? markerData.desc : (typeof markerData?.markup === 'string' ? markerData.markup : '');
           const chunks = extractChunkCountFromDesc(descSource);
-          const playersTotal = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
+          const townPlayers = extractPlayersTotalFromDesc(descSource, { scope: 'territory' });
+          const countryPlayers = extractPlayersTotalFromDesc(descSource, { scope: 'country' });
+          const territoryCount = extractCountryTerritoryCountFromDesc(descSource);
           const mcX = safeNumber(spawn?.x);
           const mcZ = safeNumber(spawn?.z);
           items.push({
@@ -540,7 +584,9 @@ async function loadOverlayDatasetItems(datasetKey) {
             size: 0,
             quantity: 1,
             chunks,
-            playersTotal
+            townPlayers,
+            countryPlayers,
+            territoryCount
           });
         });
       }
@@ -555,7 +601,7 @@ function computeFilteredSortedItems() {
   const query = normalizeText(overlayListState.search);
   const filtered = query
     ? overlayListState.items.filter(item => {
-        const haystack = `${item.name} ${item.id} ${item.country} ${item.chunks ?? ''} ${item.playersTotal ?? ''}`.toLowerCase();
+        const haystack = `${item.name} ${item.id} ${item.country} ${item.chunks ?? ''} ${item.townPlayers ?? ''} ${item.countryPlayers ?? ''}`.toLowerCase();
         return haystack.includes(query);
       })
     : overlayListState.items.slice();
@@ -563,7 +609,7 @@ function computeFilteredSortedItems() {
   const direction = overlayListState.sortDirection === 'desc' ? -1 : 1;
   const field = overlayListState.sortField;
   filtered.sort((a, b) => {
-    if (field === 'size' || field === 'quantity' || field === 'chunks' || field === 'playersTotal') {
+    if (field === 'size' || field === 'quantity' || field === 'chunks' || field === 'townPlayers' || field === 'countryPlayers' || field === 'territoryCount') {
       const av = Number.isFinite(a[field]) ? a[field] : 0;
       const bv = Number.isFinite(b[field]) ? b[field] : 0;
       if (av !== bv) {
@@ -572,8 +618,8 @@ function computeFilteredSortedItems() {
       return String(a.id).localeCompare(String(b.id)) * direction;
     }
 
-    const av = String(a[field] ?? '');
-    const bv = String(b[field] ?? '');
+    const av = field === 'countryName' ? String(a.country ?? '') : String(a[field] ?? '');
+    const bv = field === 'countryName' ? String(b.country ?? '') : String(b[field] ?? '');
     const cmp = av.localeCompare(bv, 'zh-Hans-CN-u-co-pinyin');
     if (cmp !== 0) {
       return cmp * direction;
@@ -625,14 +671,14 @@ function renderOverlayList(reset = false) {
     const safeName = String(item.name ?? '');
     const safeCountry = String(item.country ?? '无国家');
     const chunkValue = item.chunks === null || item.chunks === undefined ? '-' : String(item.chunks);
-    const playersValue = item.playersTotal === null || item.playersTotal === undefined ? '-' : String(item.playersTotal);
+    const townPlayersValue = item.townPlayers === null || item.townPlayers === undefined ? '-' : String(item.townPlayers);
 
     row.innerHTML = `
       <div>
         <div class="data-row__name" title="${safeName.replace(/\"/g, '&quot;')}">${safeName}</div>
         <div class="data-row__meta">
           <div>区块：${chunkValue}</div>
-          <div>玩家总数：${playersValue}</div>
+          <div>城镇玩家数：${townPlayersValue}</div>
         </div>
       </div>
       <div class="${countryClass}">${safeCountry}</div>
