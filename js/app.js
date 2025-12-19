@@ -92,6 +92,118 @@
       const CAPITAL_COLOR_STORAGE_KEY = 'capitalColorModes';
       const capitalColorOverrides = Object.create(null);
       let lastCountryCapitalData = {};
+      let lastCountryAreasData = {};
+
+      const DEFAULT_TERRITORY_STROKE_COLOR = '#009933';
+      const DEFAULT_TERRITORY_FILL_COLOR = '#00ff00';
+      const countryColorCache = Object.create(null);
+
+      function normalizeColor(value) {
+        if (!value || typeof value !== 'string') {
+          return '';
+        }
+        return value.trim().toLowerCase();
+      }
+
+      function toHex6(value) {
+        const raw = normalizeColor(value);
+        if (!raw) {
+          return '';
+        }
+
+        if (raw.startsWith('rgb')) {
+          const match = raw.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+          if (!match) {
+            return '';
+          }
+          const r = Math.max(0, Math.min(255, Number(match[1])));
+          const g = Math.max(0, Math.min(255, Number(match[2])));
+          const b = Math.max(0, Math.min(255, Number(match[3])));
+          return [r, g, b].map(part => part.toString(16).padStart(2, '0')).join('');
+        }
+
+        let hex = raw;
+        if (hex.startsWith('#')) {
+          hex = hex.slice(1);
+        } else if (hex.startsWith('0x')) {
+          hex = hex.slice(2);
+        }
+
+        if (/^[0-9a-f]{3}$/i.test(hex)) {
+          hex = hex.split('').map(ch => ch + ch).join('');
+        } else if (/^[0-9a-f]{8}$/i.test(hex)) {
+          hex = hex.slice(0, 6);
+        }
+
+        return /^[0-9a-f]{6}$/i.test(hex) ? hex.toLowerCase() : '';
+      }
+
+      function isSameHexColor(value, expected) {
+        const valueHex = toHex6(value);
+        const expectedHex = toHex6(expected);
+        if (!valueHex || !expectedHex) {
+          return false;
+        }
+        return valueHex === expectedHex;
+      }
+
+      function hashHue(value) {
+        const str = String(value ?? '');
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) {
+          hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+        }
+        return hash % 360;
+      }
+
+      function getCountryColorScheme(countryName) {
+        const key = String(countryName ?? '');
+        if (countryColorCache[key]) {
+          return countryColorCache[key];
+        }
+        const hue = hashHue(key);
+        const scheme = {
+          stroke: `hsl(${hue}, 78%, 38%)`,
+          fill: `hsl(${hue}, 78%, 55%)`
+        };
+        countryColorCache[key] = scheme;
+        return scheme;
+      }
+
+      function getCountryOverlayScheme(countryName) {
+        const fallback = getCountryColorScheme(countryName);
+        if (!lastCountryAreasData || typeof lastCountryAreasData !== 'object') {
+          return fallback;
+        }
+
+        const areas = lastCountryAreasData[countryName];
+        if (!areas || typeof areas !== 'object') {
+          return fallback;
+        }
+
+        for (const area of Object.values(areas)) {
+          if (!area || typeof area !== 'object') {
+            continue;
+          }
+
+          const strokeSource = area?.color;
+          const fillSource = area?.fillcolor || area?.color;
+          const isDefaultStroke = !strokeSource || isSameHexColor(strokeSource, DEFAULT_TERRITORY_STROKE_COLOR);
+          const isDefaultFill = !fillSource ||
+            isSameHexColor(fillSource, DEFAULT_TERRITORY_FILL_COLOR) ||
+            isSameHexColor(fillSource, DEFAULT_TERRITORY_STROKE_COLOR);
+          const useCountryColor = isDefaultStroke && isDefaultFill;
+
+          if (!useCountryColor) {
+            return {
+              stroke: area?.color || area?.fillcolor || DEFAULT_TERRITORY_STROKE_COLOR,
+              fill: area?.fillcolor || area?.color || DEFAULT_TERRITORY_FILL_COLOR
+            };
+          }
+        }
+
+        return fallback;
+      }
 
       function syncCapitalColorOverrides(modes) {
         const source = modes && typeof modes === 'object' ? modes : {};
@@ -225,9 +337,9 @@
             }
 
             const polygon = L.polygon(latLngs, {
-              color: area?.color || '#34d399',
+              color: area?.color || DEFAULT_TERRITORY_STROKE_COLOR,
               weight: area?.weight ?? 2,
-              fillColor: area?.fillcolor || area?.color || '#34d399',
+              fillColor: area?.fillcolor || area?.color || DEFAULT_TERRITORY_FILL_COLOR,
               fillOpacity: area?.fillopacity ?? 0.3
             });
 
@@ -254,6 +366,7 @@
         }
 
         Object.entries(countrySpawn).forEach(([countryName, data]) => {
+          const scheme = getCountryOverlayScheme(countryName);
           (data?.spawns || []).forEach(spawn => {
             const coords = mcToMapCoords(spawn?.x, spawn?.z);
             if (!coords) {
@@ -263,8 +376,8 @@
             const spawnMarker = L.circleMarker(coords, {
               radius: 5,
               weight: 2,
-              color: '#facc15',
-              fillColor: '#facc15',
+              color: scheme.stroke,
+              fillColor: scheme.fill,
               fillOpacity: 0.9
             });
 
@@ -308,11 +421,14 @@
       function updateCountryAreas(countryAreas) {
         clearOverlay('countryAreas');
 
+        lastCountryAreasData = countryAreas && typeof countryAreas === 'object' ? countryAreas : {};
+
         if (!countryAreas || typeof countryAreas !== 'object') {
           return;
         }
 
         Object.entries(countryAreas).forEach(([countryName, areas]) => {
+          const countryScheme = getCountryColorScheme(countryName);
           Object.entries(areas || {}).forEach(([areaId, area]) => {
             if (!Array.isArray(area?.x) || !Array.isArray(area?.z) || area.x.length !== area.z.length || !area.x.length) {
               return;
@@ -323,11 +439,26 @@
               return;
             }
 
+            const strokeSource = area?.color;
+            const fillSource = area?.fillcolor || area?.color;
+            const isDefaultStroke = !strokeSource || isSameHexColor(strokeSource, DEFAULT_TERRITORY_STROKE_COLOR);
+            const isDefaultFill = !fillSource ||
+              isSameHexColor(fillSource, DEFAULT_TERRITORY_FILL_COLOR) ||
+              isSameHexColor(fillSource, DEFAULT_TERRITORY_STROKE_COLOR);
+            const useCountryColor = isDefaultStroke && isDefaultFill;
+
+            const strokeColor = useCountryColor
+              ? countryScheme.stroke
+              : (area?.color || area?.fillcolor || DEFAULT_TERRITORY_STROKE_COLOR);
+            const fillColor = useCountryColor
+              ? countryScheme.fill
+              : (area?.fillcolor || area?.color || DEFAULT_TERRITORY_FILL_COLOR);
+
             const polygon = L.polygon(latLngs, {
-              color: '#f97316',
+              color: strokeColor,
               weight: area?.weight ?? 2,
-              fillColor: '#fb923c',
-              fillOpacity: 0.2
+              fillColor: fillColor,
+              fillOpacity: area?.fillopacity ?? 0.2
             });
 
             const heading = area?.label ? `${countryName} · ${area.label}` : countryName;
@@ -415,9 +546,9 @@
         }
         updateTerritoryMarkers(detail.markers || {});
         updateTerritoryAreas(detail.areas || {});
+        updateCountryAreas(detail.countryAreas || {});
         updateCountrySpawns(detail.countrySpawn || {});
         updateCountryCapitalSpawns(detail.countryCapitalsSpawn || {});
-        updateCountryAreas(detail.countryAreas || {});
         updateCountryCapitals(detail.countryCapitals || {});
       }
 
