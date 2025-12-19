@@ -1,9 +1,10 @@
-﻿    const imageHeight = 838;
+﻿    const imageHeight = 1688;
+    const imageWidth = 1570;
     const imageBounds = [[0, 0], [imageHeight, imageWidth]];
 
     const map = L.map('map', {
       crs: L.CRS.Simple,
-      center: [imageHeight / 2, imageWidth / 2],
+      center: [838 / 2, 838 / 2],
       zoom: -1,
       minZoom: -3,
       maxZoom: 5
@@ -62,10 +63,10 @@
       }
 
       const MC_BOUNDS = {
-        minX: -10459,
-        maxX: 8540,
-        minZ: -8384,
-        maxZ: 7616
+        minX: -13566,
+        maxX: 11520,
+        minZ: -8702,
+        maxZ: 18297
       };
 
       const WORLD_WIDTH = MC_BOUNDS.maxX - MC_BOUNDS.minX;

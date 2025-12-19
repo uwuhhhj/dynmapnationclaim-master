@@ -314,7 +314,7 @@ async function processCountryData(markers, areas) {
         extractCountryFromDesc(marker?.label);
 
       if (!countryName) {
-        logger.warn(`Skipping marker ${markerId}: no country found via extractCountryFromDesc`);
+        //logger.warn(`Skipping marker ${markerId}: no country found via extractCountryFromDesc`);
         continue;
       }
 
@@ -346,7 +346,7 @@ async function processCountryData(markers, areas) {
         extractCountryFromDesc(area?.label);
 
       if (!countryName) {
-        logger.warn(`Skipping area ${areaId}: no country found via extractCountryFromDesc`);
+        //logger.warn(`Skipping area ${areaId}: no country found via extractCountryFromDesc`);
         continue;
       }
 
