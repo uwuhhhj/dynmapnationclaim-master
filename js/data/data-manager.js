@@ -29,18 +29,7 @@ const OVERLAY_DATASETS = Object.freeze([
   { key: 'countryCapitalsSpawn', label: '首都出生点（点）' }
 ]);
 
-const overlayListState = {
-  datasetKey: 'territoryMarkers',
-  search: '',
-  sortField: 'id',
-  sortDirection: 'asc',
-  items: [],
-  filteredSortedItems: [],
-  visibleCount: 0,
-  batchSize: 80
-};
-
-let overlayListObserver = null;
+let overlayListController = null;
 
 /**
  * 通用工具函数
@@ -52,206 +41,20 @@ const logger = {
   error: (...args) => console.error('[DataManager]', ...args)
 };
 
-function stripHtml(value) {
-  if (!value || typeof value !== 'string') {
-    return '';
-  }
-
-  return value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+const descParsers = window.DynmapDescParsers;
+if (!descParsers) {
+  logger.warn('Missing DynmapDescParsers. Ensure js/data/desc-parsers.js is loaded before data-manager.js.');
 }
 
-function extractCountryFromDesc(desc) {
-  const cleanDesc = stripHtml(desc);
-  if (!cleanDesc) {
-    return null;
-  }
-
-  const patterns = [
-    /这片领土属于国家[:：]?\s*([^，。:\\s]+)/
-  ];
-
-  for (const pattern of patterns) {
-    const match = cleanDesc.match(pattern);
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-  }
-
-  return null;
-}
-
-// 严格解析“首都: XXX/首都：XXX”的工具方法
-function extractCapitalFromDescStrict(desc) {
-  const cleanDesc = stripHtml(desc);
-  if (!cleanDesc) {
-    return null;
-  }
-
-  const patterns = [
-    /首都[:：]?\s*([^，。:\s]+)/
-  ];
-
-  for (const pattern of patterns) {
-    const match = cleanDesc.match(pattern);
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-  }
-
-  return null;
-}
-
-function extractPrimaryNameFromDesc(desc) {
-  const cleanDesc = stripHtml(desc);
-  if (!cleanDesc) {
-    return null;
-  }
-
-  const firstLine = cleanDesc.split(/\n/u)[0]?.trim();
-  if (!firstLine) {
-    return null;
-  }
-
-  const token = firstLine.split(/[\s，。:：；;]+/u)[0]?.trim();
-  return token || null;
-}
-
-function parseCompactNumber(raw) {
-  if (raw === null || raw === undefined) {
-    return null;
-  }
-  const normalized = String(raw).replace(/[,，\s]/g, '').trim();
-  if (!normalized) {
-    return null;
-  }
-  const value = Number(normalized);
-  return Number.isFinite(value) ? value : null;
-}
-
-function extractChunkCountFromDesc(desc) {
-  const clean = stripHtml(desc);
-  if (!clean) {
-    return null;
-  }
-
-  const match = clean.match(/区块[:：]\s*([0-9,，\s]+)/u);
-  if (!match || !match[1]) {
-    return null;
-  }
-
-  return parseCompactNumber(match[1]);
-}
-
-function extractCountryTerritoryCountFromDesc(desc) {
-  const clean = stripHtml(desc);
-  if (!clean) {
-    return null;
-  }
-
-  const match = clean.match(/领土\s*[（(]\s*数量[:：]\s*([0-9,，\s]+)\s*[,，]/u);
-  if (!match || !match[1]) {
-    return null;
-  }
-
-  return parseCompactNumber(match[1]);
-}
-
-function extractTerritoryPlayersFromDesc(desc) {
-  const clean = stripHtml(desc);
-  if (!clean) {
-    return null;
-  }
-
-  const territoryPlayers = clean.match(/玩家\s*[（(]\s*(\d+)\s*[）)]/u);
-  if (territoryPlayers && territoryPlayers[1]) {
-    return parseCompactNumber(territoryPlayers[1]);
-  }
-
-  return null;
-}
-
-function extractCountryPlayersTotalFromDesc(desc) {
-  const clean = stripHtml(desc);
-  if (!clean) {
-    return null;
-  }
-
-  const territorySummary = clean.match(/领土\s*[（(]\s*数量[:：]\s*[0-9,，\s]+\s*[,，]\s*玩家数量[:：]\s*([0-9,，\s]+)/u);
-  if (territorySummary && territorySummary[1]) {
-    const parsed = parseCompactNumber(territorySummary[1]);
-    if (parsed !== null) {
-      return parsed;
-    }
-  }
-
-  const countryTotal = clean.match(/玩家数量[:：]\s*([0-9,，\s]+)/u);
-  if (countryTotal && countryTotal[1]) {
-    return parseCompactNumber(countryTotal[1]);
-  }
-
-  return null;
-}
-
-function extractPlayersTotalFromDesc(desc, options = {}) {
-  const { scope = 'auto' } = options;
-
-  if (scope === 'territory') {
-    return extractTerritoryPlayersFromDesc(desc);
-  }
-
-  if (scope === 'country') {
-    return extractCountryPlayersTotalFromDesc(desc);
-  }
-
-  // auto: prefer country total when present, otherwise fall back to territory count.
-  return extractCountryPlayersTotalFromDesc(desc) ?? extractTerritoryPlayersFromDesc(desc);
-}
-
-// 校验区域文本是否以 >首都名< 的形式出现
-function areaContainsTagDelimitedName(source, name) {
-  if (!source || !name || typeof source !== 'string' || typeof name !== 'string') {
-    return false;
-  }
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`>${escaped}<`);
-  return re.test(source);
-}
-
-function deriveTerritoryGroupingName(identifier, source) {
-  const candidates = [source?.label, source?.name, source?.title];
-  for (const candidate of candidates) {
-    const cleaned = stripHtml(candidate);
-    if (cleaned) {
-      return cleaned;
-    }
-  }
-
-  const fallback = stripHtml(source?.desc);
-  if (fallback) {
-    const patterns = [
-      /领地[:：]\s*([^，。:\\s]+)/,
-      /territory[:：]?\s*([A-Za-z0-9 _'()-]+)/i
-    ];
-
-    for (const pattern of patterns) {
-      const match = fallback.match(pattern);
-      if (match && match[1]) {
-        return match[1].trim();
-      }
-    }
-
-    const primarySegment = fallback.split(/[，。:；;\n]/u)[0]?.trim();
-    if (primarySegment) {
-      return primarySegment;
-    }
-  }
-
-  if (identifier) {
-    return `Territory ${identifier}`;
-  }
-
-  return null;
-}
+const stripHtml = descParsers?.stripHtml ?? (value => (typeof value === 'string' ? value : ''));
+const extractCountryFromDesc = descParsers?.extractCountryFromDesc ?? (() => null);
+const extractCapitalFromDescStrict = descParsers?.extractCapitalFromDescStrict ?? (() => null);
+const extractPrimaryNameFromDesc = descParsers?.extractPrimaryNameFromDesc ?? (() => null);
+const extractChunkCountFromDesc = descParsers?.extractChunkCountFromDesc ?? (() => null);
+const extractCountryTerritoryCountFromDesc = descParsers?.extractCountryTerritoryCountFromDesc ?? (() => null);
+const extractPlayersTotalFromDesc = descParsers?.extractPlayersTotalFromDesc ?? (() => null);
+const areaContainsTagDelimitedName = descParsers?.areaContainsTagDelimitedName ?? (() => false);
+const deriveTerritoryGroupingName = descParsers?.deriveTerritoryGroupingName ?? (() => null);
 
 function safeNumber(value) {
   const n = typeof value === 'number' ? value : Number(value);
@@ -314,10 +117,6 @@ function polygonStatsFromXZ(xValues, zValues) {
   };
 }
 
-function normalizeText(value) {
-  return String(value ?? '').trim().toLowerCase();
-}
-
 function formatCountry(value) {
   const clean = String(value ?? '').trim();
   return clean ? clean : '无国家';
@@ -343,6 +142,32 @@ function focusMapAtMc(mcX, mcZ) {
 
   logger.warn('Map focus requested but overlay API is missing.');
   return false;
+}
+
+function ensureOverlayListController() {
+  if (overlayListController) {
+    return overlayListController;
+  }
+
+  const Controller = window.DynmapOverlayListController;
+  if (typeof Controller !== 'function') {
+    logger.warn('Overlay list controller is not loaded.');
+    return null;
+  }
+
+  overlayListController = new Controller({
+    datasets: OVERLAY_DATASETS,
+    initialDatasetKey: 'territoryMarkers',
+    initialSortField: 'id',
+    initialSortDirection: 'asc',
+    batchSize: 80,
+    getItems: loadOverlayDatasetItems,
+    onFocusMc: focusMapAtMc,
+    onStatus: displayStorageStatus
+  });
+
+  overlayListController.bind();
+  return overlayListController;
 }
 
 async function loadOverlayDatasetItems(datasetKey) {
@@ -597,237 +422,6 @@ async function loadOverlayDatasetItems(datasetKey) {
   }
 }
 
-function computeFilteredSortedItems() {
-  const query = normalizeText(overlayListState.search);
-  const filtered = query
-    ? overlayListState.items.filter(item => {
-        const haystack = `${item.name} ${item.id} ${item.country} ${item.chunks ?? ''} ${item.townPlayers ?? ''} ${item.countryPlayers ?? ''}`.toLowerCase();
-        return haystack.includes(query);
-      })
-    : overlayListState.items.slice();
-
-  const direction = overlayListState.sortDirection === 'desc' ? -1 : 1;
-  const field = overlayListState.sortField;
-  filtered.sort((a, b) => {
-    if (field === 'size' || field === 'quantity' || field === 'chunks' || field === 'townPlayers' || field === 'countryPlayers' || field === 'territoryCount') {
-      const av = Number.isFinite(a[field]) ? a[field] : 0;
-      const bv = Number.isFinite(b[field]) ? b[field] : 0;
-      if (av !== bv) {
-        return (av - bv) * direction;
-      }
-      return String(a.id).localeCompare(String(b.id)) * direction;
-    }
-
-    const av = field === 'countryName' ? String(a.country ?? '') : String(a[field] ?? '');
-    const bv = field === 'countryName' ? String(b.country ?? '') : String(b[field] ?? '');
-    const cmp = av.localeCompare(bv, 'zh-Hans-CN-u-co-pinyin');
-    if (cmp !== 0) {
-      return cmp * direction;
-    }
-    return String(a.id).localeCompare(String(b.id)) * direction;
-  });
-
-  overlayListState.filteredSortedItems = filtered;
-}
-
-function renderOverlayList(reset = false) {
-  const dataList = document.getElementById('data-list');
-  const dataTitle = document.getElementById('data-display-title');
-  if (!dataList || !dataTitle) {
-    return;
-  }
-
-  const dataset = OVERLAY_DATASETS.find(item => item.key === overlayListState.datasetKey);
-  dataTitle.textContent = `📋 覆盖层数据：${dataset?.label ?? overlayListState.datasetKey}`;
-
-  if (reset) {
-    overlayListState.visibleCount = Math.min(overlayListState.batchSize, overlayListState.filteredSortedItems.length);
-    dataList.innerHTML = '';
-  }
-
-  if (overlayListState.filteredSortedItems.length === 0) {
-    if (reset) {
-      dataList.innerHTML = '<div class="data-sentinel">暂无数据（请先点击“获取最新数据”）</div>';
-    }
-    return;
-  }
-
-  const end = overlayListState.visibleCount;
-  const fragment = document.createDocumentFragment();
-
-  const existingRows = dataList.querySelectorAll('.data-row').length;
-  for (let i = existingRows; i < Math.min(end, overlayListState.filteredSortedItems.length); i += 1) {
-    const item = overlayListState.filteredSortedItems[i];
-    const row = document.createElement('button');
-    row.type = 'button';
-    row.className = 'data-row';
-    row.dataset.mcX = item.mcX ?? '';
-    row.dataset.mcZ = item.mcZ ?? '';
-    row.dataset.itemId = item.id;
-
-    const hasCountry = item.country && item.country !== '无国家';
-    const countryClass = hasCountry ? 'data-row__pill' : 'data-row__pill is-empty';
-
-    const safeName = String(item.name ?? '');
-    const safeCountry = String(item.country ?? '无国家');
-    const chunkValue = item.chunks === null || item.chunks === undefined ? '-' : String(item.chunks);
-    const townPlayersValue = item.townPlayers === null || item.townPlayers === undefined ? '-' : String(item.townPlayers);
-
-    row.innerHTML = `
-      <div>
-        <div class="data-row__name" title="${safeName.replace(/\"/g, '&quot;')}">${safeName}</div>
-        <div class="data-row__meta">
-          <div>区块：${chunkValue}</div>
-          <div>城镇玩家数：${townPlayersValue}</div>
-        </div>
-      </div>
-      <div class="${countryClass}">${safeCountry}</div>
-    `;
-
-    fragment.appendChild(row);
-  }
-
-  let sentinel = dataList.querySelector('#data-list-sentinel');
-  if (!sentinel) {
-    sentinel = document.createElement('div');
-    sentinel.id = 'data-list-sentinel';
-    sentinel.className = 'data-sentinel';
-    dataList.appendChild(sentinel);
-  }
-
-  dataList.insertBefore(fragment, sentinel);
-
-  const hasMore = overlayListState.visibleCount < overlayListState.filteredSortedItems.length;
-  sentinel.textContent = hasMore ? `继续滚动加载（已显示 ${Math.min(end, overlayListState.filteredSortedItems.length)} / ${overlayListState.filteredSortedItems.length}）` : `已显示全部 ${overlayListState.filteredSortedItems.length} 条`;
-}
-
-function ensureOverlayListObserver() {
-  if (overlayListObserver) {
-    return;
-  }
-
-  const panel = document.querySelector('.control-panel');
-  const dataList = document.getElementById('data-list');
-  if (!panel || !dataList) {
-    return;
-  }
-
-  overlayListObserver = new IntersectionObserver(
-    entries => {
-      const entry = entries[0];
-      if (!entry?.isIntersecting) {
-        return;
-      }
-
-      if (overlayListState.visibleCount >= overlayListState.filteredSortedItems.length) {
-        return;
-      }
-
-      overlayListState.visibleCount = Math.min(
-        overlayListState.visibleCount + overlayListState.batchSize,
-        overlayListState.filteredSortedItems.length
-      );
-      renderOverlayList(false);
-    },
-    { root: panel, threshold: 0.15 }
-  );
-
-  const sentinel = dataList.querySelector('#data-list-sentinel');
-  if (sentinel) {
-    overlayListObserver.observe(sentinel);
-  }
-}
-
-function refreshOverlayListObserver() {
-  const dataList = document.getElementById('data-list');
-  if (!overlayListObserver || !dataList) {
-    return;
-  }
-  const sentinel = dataList.querySelector('#data-list-sentinel');
-  if (sentinel) {
-    overlayListObserver.disconnect();
-    overlayListObserver.observe(sentinel);
-  }
-}
-
-async function updateOverlayList(reset = true) {
-  overlayListState.items = await loadOverlayDatasetItems(overlayListState.datasetKey);
-  computeFilteredSortedItems();
-  renderOverlayList(reset);
-  ensureOverlayListObserver();
-  refreshOverlayListObserver();
-}
-
-function initializeOverlayListUI() {
-  const datasetSelect = document.getElementById('overlay-dataset-select');
-  const searchInput = document.getElementById('overlay-search');
-  const sortField = document.getElementById('overlay-sort-field');
-  const sortDirection = document.getElementById('overlay-sort-direction');
-  const dataList = document.getElementById('data-list');
-
-  if (datasetSelect) {
-    datasetSelect.value = overlayListState.datasetKey;
-    datasetSelect.addEventListener('change', async () => {
-      overlayListState.datasetKey = datasetSelect.value;
-      await updateOverlayList(true);
-    });
-  }
-
-  if (searchInput) {
-    let timer = null;
-    searchInput.addEventListener('input', () => {
-      window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        overlayListState.search = searchInput.value;
-        computeFilteredSortedItems();
-        renderOverlayList(true);
-        refreshOverlayListObserver();
-      }, 120);
-    });
-  }
-
-  if (sortField) {
-    sortField.value = overlayListState.sortField;
-    sortField.addEventListener('change', () => {
-      overlayListState.sortField = sortField.value;
-      computeFilteredSortedItems();
-      renderOverlayList(true);
-      refreshOverlayListObserver();
-    });
-  }
-
-  if (sortDirection) {
-    sortDirection.value = overlayListState.sortDirection;
-    sortDirection.addEventListener('change', () => {
-      overlayListState.sortDirection = sortDirection.value;
-      computeFilteredSortedItems();
-      renderOverlayList(true);
-      refreshOverlayListObserver();
-    });
-  }
-
-  if (dataList) {
-    dataList.addEventListener('click', event => {
-      const target = event.target;
-      const row = target?.closest?.('.data-row');
-      if (!row) {
-        return;
-      }
-
-      const mcX = safeNumber(row.dataset.mcX);
-      const mcZ = safeNumber(row.dataset.mcZ);
-      if (mcX === null || mcZ === null) {
-        displayStorageStatus('warning', '该条目没有可定位的坐标');
-        return;
-      }
-
-      const ok = focusMapAtMc(mcX, mcZ);
-      if (!ok) {
-        displayStorageStatus('warning', '地图尚未就绪，无法定位');
-      }
-    });
-  }
-}
 function emitDataUpdated(detail) {
   if (typeof document === 'undefined' || typeof CustomEvent !== 'function') {
     return;
@@ -1328,7 +922,12 @@ async function verifyCountryClaimsCleared() {
  */
 
 async function updateDataDisplay() {
-  await updateOverlayList(true);
+  const controller = ensureOverlayListController();
+  if (!controller) {
+    return;
+  }
+
+  await controller.refresh(true);
 }
 
 function displayMarkersOnPage(markers) {
@@ -1685,17 +1284,13 @@ async function refreshAllData() {
 }
 
 async function toggleDataView() {
-  const order = OVERLAY_DATASETS.map(item => item.key);
-  const currentIndex = Math.max(0, order.indexOf(overlayListState.datasetKey));
-  const nextKey = order[(currentIndex + 1) % order.length];
-  overlayListState.datasetKey = nextKey;
-
-  const datasetSelect = document.getElementById('overlay-dataset-select');
-  if (datasetSelect) {
-    datasetSelect.value = nextKey;
+  const controller = ensureOverlayListController();
+  if (!controller) {
+    return;
   }
 
-  await updateOverlayList(true);
+  controller.cycleDataset();
+  await controller.refresh(true);
 }
 
 async function viewStoredData() {
@@ -1728,13 +1323,13 @@ async function viewStoredData() {
 }
 
 async function viewCountryData() {
-  const target = 'countryAreas';
-  overlayListState.datasetKey = target;
-  const datasetSelect = document.getElementById('overlay-dataset-select');
-  if (datasetSelect) {
-    datasetSelect.value = target;
+  const controller = ensureOverlayListController();
+  if (!controller) {
+    return;
   }
-  await updateOverlayList(true);
+
+  controller.setDataset('countryAreas');
+  await controller.refresh(true);
 }
 
 async function clearStoredData() {
@@ -1773,7 +1368,7 @@ async function clearStoredData() {
  */
 
 async function initializeDataManager() {
-  initializeOverlayListUI();
+  ensureOverlayListController();
   logger.info('Initializing data manager…');
   displayStorageStatus('info', '正在初始化数据…');
 
