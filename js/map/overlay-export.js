@@ -289,6 +289,31 @@
       };
     }
 
+    function waitForMapRender(map) {
+      if (!map) {
+        return Promise.resolve();
+      }
+      return new Promise(resolve => {
+        let settled = false;
+        let timer;
+        const finish = () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          map.off('render', finish);
+          map.off('moveend', finish);
+          map.off('zoomend', finish);
+          clearTimeout(timer);
+          resolve();
+        };
+        timer = setTimeout(finish, 120);
+        map.on('render', finish);
+        map.on('moveend', finish);
+        map.on('zoomend', finish);
+      });
+    }
+
     async function exportOverlayImage(options = {}) {
       if (!window.html2canvas) {
         throw new Error('Missing html2canvas library');
@@ -303,13 +328,15 @@
       }
 
       const { width, height, scale } = computeExportSize(bounds, options);
+      const exportBackgroundColor = options?.backgroundColor;
+      const html2canvasBackgroundColor = exportBackgroundColor ?? null;
       const container = document.createElement('div');
       container.style.position = 'fixed';
       container.style.left = '-99999px';
       container.style.top = '0';
       container.style.width = `${width}px`;
       container.style.height = `${height}px`;
-      container.style.background = '#0f172a';
+      container.style.background = exportBackgroundColor ?? 'transparent';
       document.body.appendChild(container);
 
       let exportMap = null;
@@ -326,11 +353,14 @@
 
         exportMap.fitBounds(bounds, { padding: [0, 0] });
 
-        const baseLayer = overlayApi.baseLayer;
-        if (baseLayer) {
-          const baseUrl = baseLayer._url || baseLayer._image?.src || baseLayer._url;
-          if (baseUrl) {
-            L.imageOverlay(baseUrl, overlayApi.imageBounds || fullImageBounds).addTo(exportMap);
+        const includeBaseLayer = Boolean(options?.includeBaseLayer);
+        if (includeBaseLayer) {
+          const baseLayer = overlayApi.baseLayer;
+          if (baseLayer) {
+            const baseUrl = baseLayer._url || baseLayer._image?.src || baseLayer._url;
+            if (baseUrl) {
+              L.imageOverlay(baseUrl, overlayApi.imageBounds || fullImageBounds).addTo(exportMap);
+            }
           }
         }
 
@@ -338,8 +368,10 @@
         const overlayGroup = cloneOverlays(activeKeys);
         overlayGroup.addTo(exportMap);
 
+        await waitForMapRender(exportMap);
+
         const canvas = await window.html2canvas(container, {
-          backgroundColor: '#0f172a',
+          backgroundColor: html2canvasBackgroundColor,
           scale: scale || 1,
           useCORS: true,
           logging: false
