@@ -368,7 +368,13 @@
             return;
           }
 
-          const markerLayer = L.marker(coords);
+          const markerLayer = L.circleMarker(coords, {
+            radius: 5,
+            color: '#0ea5e9',
+            fillColor: '#38bdf8',
+            fillOpacity: 0.72,
+            weight: 2
+          });
           bindPopup(markerLayer, marker?.label || markerId, marker?.desc);
           overlayLayers.territoryMarkers.addLayer(markerLayer);
           overlayContent.territoryMarkers.push(markerLayer);
@@ -421,7 +427,13 @@
             if (!coords) {
               return;
             }
-            const spawnMarker = L.marker(coords);
+            const spawnMarker = L.circleMarker(coords, {
+              radius: 6,
+              color: '#f59e0b',
+              fillColor: '#fbbf24',
+              fillOpacity: 0.8,
+              weight: 2
+            });
             bindPopup(spawnMarker, `${countryName} 出生点`, `${spawn?.name || ''}`);
             overlayLayers.countrySpawn.addLayer(spawnMarker);
             overlayContent.countrySpawn.push(spawnMarker);
@@ -443,7 +455,13 @@
             if (!coords) {
               return;
             }
-            const spawnMarker = L.marker(coords);
+            const spawnMarker = L.circleMarker(coords, {
+              radius: 6,
+              color: '#7c3aed',
+              fillColor: '#a855f7',
+              fillOpacity: 0.72,
+              weight: 2
+            });
             bindPopup(spawnMarker, `${countryName} 首都出生点`, `${spawn?.name || ''}`);
             overlayLayers.countryCapitalsSpawn.addLayer(spawnMarker);
             overlayContent.countryCapitalsSpawn.push(spawnMarker);
